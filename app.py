@@ -96,28 +96,66 @@ def scrape_cnbcindonesia(tema, max_halaman=3):
                 })
     return hasil
 
-def scrape_detik(tema, max_halaman=3):
+def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+    """
+    Scraper Detik versi perbaikan berdasarkan struktur HTML asli halaman pencarian.
+    tanggal_mulai / tanggal_akhir: objek date/datetime Python (opsional).
+    Detik mendukung filter tanggal langsung lewat parameter fromdatex/todatex (format DD/MM/YYYY),
+    jadi kita serahkan filtering tanggal ke server Detik -- lebih akurat & lebih cepat.
+    """
     hasil = []
+
+    fromdatex = tanggal_mulai.strftime("%d/%m/%Y") if tanggal_mulai else None
+    todatex = tanggal_akhir.strftime("%d/%m/%Y") if tanggal_akhir else None
+
     for p in range(1, max_halaman + 1):
-        url = f"https://www.detik.com/search/searchall?query={tema}&page={p}"
+        url = f"https://www.detik.com/search/searchall?query={tema}&result_type=latest&page={p}"
+        if fromdatex and todatex:
+            from urllib.parse import quote
+            url += f"&fromdatex={quote(fromdatex, safe='')}&todatex={quote(todatex, safe='')}"
+
         html = ambil_halaman(url)
         if not html:
             continue
         soup = BeautifulSoup(html, "html.parser")
-        artikel_list = soup.select("article") or soup.select("div.list-content__item")
+        artikel_list = soup.select("article.list-content__item")
         if not artikel_list:
             break
+
         for art in artikel_list:
-            judul_tag = art.find("h2") or art.find("h3")
-            link_tag = art.find("a", href=True)
-            tanggal_tag = art.find("span", class_="date")
-            judul = judul_tag.get_text(strip=True) if judul_tag else None
-            link = link_tag["href"] if link_tag else None
-            tanggal_teks = tanggal_tag.get_text(strip=True) if tanggal_tag else None
+            judul_tag = art.select_one("h3.media__title a")
+            sumber_tag = art.select_one("h2.media__subtitle")
+            desc_tag = art.select_one("div.media__desc")
+            tanggal_span = art.select_one("div.media__date span")
+
+            if not judul_tag:
+                continue
+
+            judul = judul_tag.get_text(strip=True)
+            link = judul_tag.get("href")
+
+            tanggal_obj = None
+            tanggal_teks = None
+            if tanggal_span:
+                # d-time berisi unix timestamp -- jauh lebih akurat daripada teks "2 jam yang lalu"
+                unix_ts = tanggal_span.get("d-time")
+                tanggal_teks = tanggal_span.get("title") or tanggal_span.get_text(strip=True)
+                if unix_ts:
+                    try:
+                        tanggal_obj = datetime.fromtimestamp(int(unix_ts))
+                    except (ValueError, OverflowError):
+                        tanggal_obj = parse_tanggal(tanggal_teks)
+                else:
+                    tanggal_obj = parse_tanggal(tanggal_teks)
+
             if judul and link:
                 hasil.append({
-                    "sumber": "Detik", "judul": judul, "link": link,
-                    "tanggal_teks": tanggal_teks, "tanggal": parse_tanggal(tanggal_teks)
+                    "sumber": f"Detik ({sumber_tag.get_text(strip=True) if sumber_tag else '-'})",
+                    "judul": judul,
+                    "link": link,
+                    "ringkasan": desc_tag.get_text(strip=True) if desc_tag else None,
+                    "tanggal_teks": tanggal_teks,
+                    "tanggal": tanggal_obj
                 })
     return hasil
 
@@ -184,7 +222,14 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
         if progress_callback:
             progress_callback(f"Mengambil dari {nama_sumber}...")
         try:
-            semua_hasil.extend(fungsi(tema, max_halaman=max_halaman))
+            if nama_sumber == "Detik":
+                # Detik mendukung filter tanggal langsung di request (lebih akurat)
+                semua_hasil.extend(fungsi(
+                    tema, max_halaman=max_halaman,
+                    tanggal_mulai=tanggal_mulai, tanggal_akhir=tanggal_akhir
+                ))
+            else:
+                semua_hasil.extend(fungsi(tema, max_halaman=max_halaman))
         except Exception as e:
             if progress_callback:
                 progress_callback(f"[ERROR] {nama_sumber}: {e}")
