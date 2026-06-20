@@ -14,9 +14,12 @@ import re
 import io
 
 import networkx as nx
-from sklearn.feature_extraction.text import CountVectorizer
+import pandas as pd
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
 
 # =========================================================
 # KONFIGURASI HALAMAN
@@ -154,25 +157,18 @@ def ringkas_ekstraktif(teks, jumlah_kalimat=3):
 # =========================================================
 # RINGKASAN AI (GEMINI) -- ON-DEMAND, 1 ARTIKEL PER KLIK (FITUR TERBATAS)
 # =========================================================
-def ringkas_gemini(teks, api_key, max_chars=15000):
+def _panggil_gemini(prompt, api_key, timeout=30):
+    """Helper generik buat panggil Gemini API. Dipakai oleh ringkas_gemini dan
+    bandingkan_sudut_pandang_gemini biar gak duplikasi logic request/response."""
     if not api_key:
         return None, "API key Gemini belum di-set di Streamlit secrets."
-    if not teks:
-        return None, "Tidak ada konten untuk diringkas."
 
-    teks_potong = teks[:max_chars]
-    prompt = (
-        "Ringkas berita Bahasa Indonesia berikut ini dalam 3-4 kalimat yang jelas dan natural. "
-        "Jangan tambahkan opini atau informasi di luar teks yang diberikan. "
-        "Langsung tulis ringkasannya saja, tanpa kalimat pembuka seperti 'Berikut ringkasannya:'.\n\n"
-        f"Teks berita:\n{teks_potong}"
-    )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
     except requests.exceptions.Timeout:
         return None, "Request ke Gemini timeout, coba lagi."
     except requests.exceptions.RequestException as e:
@@ -195,6 +191,120 @@ def ringkas_gemini(teks, api_key, max_chars=15000):
         return hasil_teks, None
     except (ValueError, KeyError, IndexError):
         return None, "Gagal membaca respons dari Gemini."
+
+def ringkas_gemini(teks, api_key, max_chars=15000):
+    if not teks:
+        return None, "Tidak ada konten untuk diringkas."
+    teks_potong = teks[:max_chars]
+    prompt = (
+        "Ringkas berita Bahasa Indonesia berikut ini dalam 3-4 kalimat yang jelas dan natural. "
+        "Jangan tambahkan opini atau informasi di luar teks yang diberikan. "
+        "Langsung tulis ringkasannya saja, tanpa kalimat pembuka seperti 'Berikut ringkasannya:'.\n\n"
+        f"Teks berita:\n{teks_potong}"
+    )
+    return _panggil_gemini(prompt, api_key)
+
+def bandingkan_sudut_pandang_gemini(artikel_list, api_key, max_chars_per_artikel=6000, max_artikel=4):
+    """
+    Minta Gemini membandingkan framing/sudut pandang dari beberapa artikel yang
+    membahas kejadian yang sama tapi ditulis oleh sumber berita berbeda.
+    """
+    if not artikel_list or len(artikel_list) < 2:
+        return None, "Minimal perlu 2 artikel untuk dibandingkan."
+
+    artikel_dipakai = artikel_list[:max_artikel]
+    bagian = []
+    for art in artikel_dipakai:
+        konten = (art.get("konten") or art.get("ringkasan_redaksi") or art.get("judul") or "")
+        konten = konten[:max_chars_per_artikel]
+        bagian.append(f"=== Sumber: {art.get('sumber')} ===\nJudul: {art.get('judul')}\nIsi: {konten}")
+    gabungan = "\n\n".join(bagian)
+
+    prompt = (
+        "Berikut beberapa artikel berita Bahasa Indonesia dari sumber media berbeda yang "
+        "membahas kejadian/topik yang sama. Bandingkan bagaimana masing-masing sumber "
+        "membingkai beritanya: apa yang ditekankan, sudut pandang yang diambil, fakta yang "
+        "ditonjolkan atau dilewatkan, dan perbedaan nada penulisan antar sumber. "
+        "Jangan menilai mana yang benar/salah atau bias secara politis -- cukup deskripsikan "
+        "perbedaan framing-nya secara objektif dalam beberapa paragraf singkat.\n\n"
+        f"{gabungan}"
+    )
+    return _panggil_gemini(prompt, api_key, timeout=45)
+
+# =========================================================
+# ANALISIS HASIL: deteksi liputan sama lintas sumber, word cloud, statistik
+# =========================================================
+def deteksi_klaster_berita(hasil, threshold=0.30):
+    """
+    Kelompokkan artikel yang kemungkinan membahas kejadian/topik yang sama,
+    berdasarkan kemiripan judul (TF-IDF + cosine similarity -> connected
+    components via networkx). Threshold 0.30 dikalibrasi manual: pasangan
+    judul yang jelas-jelas satu kejadian biasanya skor >=0.33, sementara yang
+    cuma "satu rumpun topik besar" ada di kisaran 0.15-0.26.
+    Hanya kembalikan klaster dengan >=2 artikel dari sumber BERBEDA.
+    """
+    if len(hasil) < 2:
+        return []
+
+    judul_list = [item.get("judul", "") for item in hasil]
+    try:
+        vektor = TfidfVectorizer().fit_transform(judul_list)
+        sim_matrix = cosine_similarity(vektor)
+    except ValueError:
+        return []
+
+    graph = nx.Graph()
+    graph.add_nodes_from(range(len(hasil)))
+    for i in range(len(hasil)):
+        for j in range(i + 1, len(hasil)):
+            if sim_matrix[i][j] >= threshold:
+                graph.add_edge(i, j)
+
+    klaster_valid = []
+    for komponen in nx.connected_components(graph):
+        if len(komponen) < 2:
+            continue
+        indeks = sorted(komponen)
+        sumber_set = {hasil[i]["sumber"] for i in indeks}
+        if len(sumber_set) >= 2:
+            klaster_valid.append(indeks)
+
+    klaster_valid.sort(key=len, reverse=True)
+    return klaster_valid
+
+_STOPWORDS_TAMBAHAN = {
+    "kata", "ujar", "kami", "akan", "juga", "dengan", "untuk", "dari", "yang",
+    "ini", "itu", "ada", "ke", "di", "dan", "para", "saat", "tersebut", "dalam"
+}
+
+def buat_wordcloud(hasil_tampil):
+    teks_gabungan = " ".join(
+        f"{item.get('judul', '')} {item.get('ringkasan_redaksi') or item.get('ringkasan') or ''}"
+        for item in hasil_tampil
+    ).strip()
+    if not teks_gabungan:
+        return None
+
+    stopwords_id = set(StopWordRemoverFactory().get_stop_words()) | _STOPWORDS_TAMBAHAN
+    try:
+        wc = WordCloud(
+            width=900, height=350, background_color="white",
+            stopwords=stopwords_id, collocations=False
+        ).generate(teks_gabungan)
+        return wc
+    except ValueError:
+        return None
+
+def buat_dataframe_statistik(hasil_tampil):
+    """DataFrame ringan buat chart jumlah artikel per sumber & per hari."""
+    baris = []
+    for item in hasil_tampil:
+        tgl = item.get("tanggal")
+        baris.append({
+            "sumber": item.get("sumber", "Lainnya"),
+            "tanggal": tgl.date() if isinstance(tgl, datetime) else None,
+        })
+    return pd.DataFrame(baris)
 
 # =========================================================
 # SCRAPER PER SUMBER
@@ -651,6 +761,7 @@ if tombol_cari:
             )
         status_box.empty()
         st.session_state.hasil = hasil
+        st.session_state.klaster = deteksi_klaster_berita(hasil)
         st.success(f"Selesai! Ditemukan {len(hasil)} artikel unik.")
 
 # =========================================================
@@ -664,6 +775,68 @@ if hasil:
     sumber_unik = sorted(set(h["sumber"] for h in hasil))
     filter_tampil = st.multiselect("Tampilkan sumber:", sumber_unik, default=sumber_unik)
     hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
+
+    # ---------------- ANALISIS HASIL ----------------
+    with st.expander("📊 Analisis Hasil (word cloud & statistik)"):
+        wc = buat_wordcloud(hasil_tampil)
+        if wc:
+            fig, ax = plt.subplots(figsize=(10, 3.5))
+            ax.imshow(wc, interpolation="bilinear")
+            ax.axis("off")
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.caption("Belum cukup teks untuk membuat word cloud.")
+
+        df_stat = buat_dataframe_statistik(hasil_tampil)
+        if not df_stat.empty:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.caption("Jumlah artikel per sumber")
+                st.bar_chart(df_stat["sumber"].value_counts())
+            with col_b:
+                st.caption("Jumlah artikel per hari")
+                per_hari = df_stat.dropna(subset=["tanggal"]).groupby("tanggal").size()
+                if not per_hari.empty:
+                    st.bar_chart(per_hari)
+                else:
+                    st.caption("Tanggal tidak terbaca untuk sebagian besar artikel.")
+
+    # ---------------- LIPUTAN SAMA DARI BEBERAPA SUMBER ----------------
+    klaster = st.session_state.get("klaster", [])
+    klaster_tampil = [
+        k for k in klaster
+        if any(hasil[i] in hasil_tampil for i in k)
+    ]
+    if klaster_tampil:
+        with st.expander(f"🔗 Liputan Sama dari Beberapa Sumber ({len(klaster_tampil)} topik)"):
+            for idx_klaster, indeks_artikel in enumerate(klaster_tampil):
+                artikel_klaster = [hasil[i] for i in indeks_artikel]
+                sumber_terlibat = ", ".join(sorted({a["sumber"] for a in artikel_klaster}))
+                st.markdown(f"**Topik {idx_klaster + 1}** — diliput oleh: {sumber_terlibat}")
+                for a in artikel_klaster:
+                    st.markdown(f"- [{a['judul']}]({a['link']}) — *{a['sumber']}*")
+
+                if not GEMINI_API_KEY:
+                    st.caption("💡 Fitur bandingkan sudut pandang AI belum dikonfigurasi developer.")
+                elif not st.session_state.get("ai_unlocked", False):
+                    st.caption("🔒 Fitur ini terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+                else:
+                    cluster_key = "_".join(str(i) for i in indeks_artikel)
+                    hasil_banding_key = f"banding_{cluster_key}"
+                    if st.session_state.get(hasil_banding_key):
+                        st.markdown("**✨ Perbandingan Sudut Pandang (AI):**")
+                        st.write(st.session_state[hasil_banding_key])
+                    else:
+                        if st.button("🔍 Bandingkan Sudut Pandang dengan AI", key=f"btn_banding_{cluster_key}"):
+                            with st.spinner("Membandingkan framing antar sumber dengan Gemini..."):
+                                hasil_banding, error = bandingkan_sudut_pandang_gemini(artikel_klaster, GEMINI_API_KEY)
+                            if hasil_banding:
+                                st.session_state[hasil_banding_key] = hasil_banding
+                                st.rerun()
+                            else:
+                                st.error(f"Gagal membandingkan: {error}")
+                st.divider()
 
     for item in hasil_tampil:
         tgl_str = item["tanggal"].strftime("%d %B %Y") if item.get("tanggal") else (item.get("tanggal_teks") or "Tanggal tidak diketahui")
