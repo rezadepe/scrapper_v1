@@ -561,14 +561,78 @@ def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None
                 })
     return hasil
 
+def scrape_liputan6(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+    """
+    Liputan6 server-side rendered, requests+BeautifulSoup cukup.
+    Native date filter via from_date/to_date (format DD/MM/YYYY).
+    NOTE: parameter pagination ("page") belum terverifikasi -- satu request
+    saja sudah mengembalikan ~20-25 artikel (2 batch ter-render sekaligus di
+    HTML, batch ke-2 disembunyikan via CSS class _hidden untuk infinite-scroll,
+    tapi datanya tetap ada di HTML statis jadi tetap ke-scrape). Kalau page=N
+    ternyata gak didukung, request berikutnya cuma akan dapat artikel duplikat
+    yang otomatis ke-filter oleh dedup di cari_berita() -- aman, cuma boros 1 request.
+    """
+    hasil = []
+    base_url = "https://www.liputan6.com/search"
+
+    for p in range(1, max_halaman + 1):
+        params = {"q": tema, "type": "all", "order": "latest"}
+        if tanggal_mulai and tanggal_akhir:
+            params["from_date"] = tanggal_mulai.strftime("%d/%m/%Y")
+            params["to_date"] = tanggal_akhir.strftime("%d/%m/%Y")
+        if p > 1:
+            params["page"] = p
+
+        url = f"{base_url}?{urlencode(params)}"
+        html = ambil_halaman(url)
+        if not html:
+            continue
+        soup = BeautifulSoup(html, "html.parser")
+        artikel_list = soup.select("article.articles--iridescent-list--item")
+        if not artikel_list:
+            break
+
+        for art in artikel_list:
+            judul = art.get("data-title")
+            link_tag = art.select_one("a[data-template-var='url']")
+            link = link_tag.get("href") if link_tag else None
+
+            time_tag = art.select_one("time[datetime]")
+            tanggal_teks = time_tag.get_text(strip=True) if time_tag else None
+            tanggal_obj = None
+            if time_tag and time_tag.get("datetime"):
+                try:
+                    tanggal_obj = datetime.fromisoformat(time_tag["datetime"])
+                except ValueError:
+                    tanggal_obj = parse_tanggal(tanggal_teks)
+
+            summary_tag = art.select_one("[data-template-var='summary']")
+            ringkasan_redaksi = summary_tag.get_text(strip=True) if summary_tag else None
+
+            if judul and link:
+                hasil.append({
+                    "sumber": "Liputan6",
+                    "judul": judul,
+                    "link": link,
+                    "ringkasan_redaksi": ringkasan_redaksi,
+                    "tanggal_teks": tanggal_teks,
+                    "tanggal": tanggal_obj,
+                })
+
+        if len(artikel_list) < 15:
+            break
+
+    return hasil
+
 SCRAPER_PER_SUMBER = {
     "CNBC Indonesia": scrape_cnbcindonesia,
     "CNN Indonesia": scrape_cnnindonesia,
     "Detik": scrape_detik,
     "Kompas": scrape_kompas,
     "Republika": scrape_republika,
+    "Liputan6": scrape_liputan6,
 }
-SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia"}
+SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6"}
 
 # =========================================================
 # AMBIL ISI ARTIKEL (untuk sumber yang gak include konten lengkap di search result)
@@ -578,6 +642,7 @@ SELECTOR_KONTEN = {
     "detik.com": ("div", {"class_": "detail__body-text"}),
     "kompas.com": ("div", {"class_": "read__content"}),
     "republika.co.id": ("div", {"class_": "article-content"}),  # best-effort dari CSS halaman search, tolong dicek
+    "liputan6.com": ("div", {"class_": "article-content-body"}),  # ditemukan dari JS brand-safety checker di halaman search
 }
 
 def scrape_isi_artikel(url):
@@ -675,7 +740,7 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
 # UI STREAMLIT
 # =========================================================
 st.title("📰 Scraper Berita Indonesia")
-st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, dan Republika berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
+st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, Republika, dan Liputan6 berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
 
 with st.sidebar:
     st.header("⚙️ Pengaturan Pencarian")
