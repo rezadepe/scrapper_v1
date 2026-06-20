@@ -4,7 +4,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from dateutil import parser as dateparser
-from datetime import datetime
+from datetime import datetime, timedelta
+from urllib.parse import urlencode, quote
 import time
 import random
 import csv
@@ -12,13 +13,25 @@ import json
 import re
 import io
 
+import networkx as nx
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
+
 # =========================================================
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(page_title="Scraper Berita Indonesia", page_icon="📰", layout="wide")
 
+try:
+    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY")
+except Exception:
+    GEMINI_API_KEY = None
+
+GEMINI_MODEL = "gemini-flash-latest"
+
 # =========================================================
-# SESSION & UTIL (sama seperti versi notebook)
+# SESSION & UTIL (sama seperti versi sebelumnya)
 # =========================================================
 @st.cache_resource
 def buat_session():
@@ -69,49 +82,167 @@ def parse_tanggal(teks_tanggal):
         return None
 
 # =========================================================
+# RINGKASAN EKSTRAKTIF -- LOKAL, GRATIS, OTOMATIS UNTUK SEMUA ARTIKEL
+# Pakai TextRank: cosine similarity antar kalimat (setelah stopword removal
+# Bahasa Indonesia via Sastrawi) -> graph -> PageRank -> ambil kalimat top-N.
+# Tanpa API, tanpa rate limit, jalan lokal di server Streamlit.
+# =========================================================
+_stopword_remover = StopWordRemoverFactory().create_stop_word_remover()
+
+KONTEN_INVALID = {
+    "Gagal mengambil halaman", "Konten kosong",
+    "Selector tidak ditemukan untuk domain ini"
+}
+
+def _split_kalimat(teks):
+    teks = re.sub(r"\s+", " ", teks).strip()
+    # lookahead juga mengizinkan tanda kutip pembuka sebelum huruf besar/angka,
+    # supaya kalimat kutipan narasumber (mis. '"...," kata Menteri...') terdeteksi
+    # sebagai kalimat baru, bukan nempel ke kalimat sebelumnya.
+    kalimat = re.split(r"(?<=[.!?])\s+(?=[\"'\u201c\u201d\u2018\u2019]?[A-Z0-9])", teks)
+    return [k.strip() for k in kalimat if len(k.strip()) > 20]
+
+def ringkas_ekstraktif(teks, jumlah_kalimat=3):
+    if not teks or len(teks.strip()) < 200:
+        return teks.strip() if teks else ""
+
+    kalimat_list = _split_kalimat(teks)
+    if len(kalimat_list) <= jumlah_kalimat:
+        return " ".join(kalimat_list)
+
+    kalimat_bersih = [_stopword_remover.remove(k.lower()) for k in kalimat_list]
+    kalimat_bersih = [k if k.strip() else "kata" for k in kalimat_bersih]
+
+    try:
+        vektor = CountVectorizer().fit_transform(kalimat_bersih)
+        sim_matrix = cosine_similarity(vektor)
+        graph = nx.from_numpy_array(sim_matrix)
+        skor = nx.pagerank(graph, max_iter=200)
+    except Exception:
+        return " ".join(kalimat_list[:jumlah_kalimat])
+
+    ranking = sorted(((skor[i], i) for i in range(len(kalimat_list))), reverse=True)
+    top_index = sorted(idx for _, idx in ranking[:jumlah_kalimat])
+    return " ".join(kalimat_list[i] for i in top_index)
+
+# =========================================================
+# RINGKASAN AI (GEMINI) -- ON-DEMAND, 1 ARTIKEL PER KLIK (FITUR TERBATAS)
+# =========================================================
+def ringkas_gemini(teks, api_key, max_chars=15000):
+    if not api_key:
+        return None, "API key Gemini belum di-set di Streamlit secrets."
+    if not teks:
+        return None, "Tidak ada konten untuk diringkas."
+
+    teks_potong = teks[:max_chars]
+    prompt = (
+        "Ringkas berita Bahasa Indonesia berikut ini dalam 3-4 kalimat yang jelas dan natural. "
+        "Jangan tambahkan opini atau informasi di luar teks yang diberikan. "
+        "Langsung tulis ringkasannya saja, tanpa kalimat pembuka seperti 'Berikut ringkasannya:'.\n\n"
+        f"Teks berita:\n{teks_potong}"
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    except requests.exceptions.Timeout:
+        return None, "Request ke Gemini timeout, coba lagi."
+    except requests.exceptions.RequestException as e:
+        return None, f"Gagal menghubungi Gemini: {e}"
+
+    if resp.status_code == 429:
+        return None, "Rate limit Gemini tercapai, coba lagi beberapa saat lagi."
+    if resp.status_code != 200:
+        return None, f"Gemini API error (status {resp.status_code})."
+
+    try:
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return None, "Gemini tidak mengembalikan hasil (kemungkinan konten difilter safety policy)."
+        parts = candidates[0].get("content", {}).get("parts", [])
+        hasil_teks = "".join(p.get("text", "") for p in parts).strip()
+        if not hasil_teks:
+            return None, "Gemini mengembalikan respons kosong."
+        return hasil_teks, None
+    except (ValueError, KeyError, IndexError):
+        return None, "Gagal membaca respons dari Gemini."
+
+# =========================================================
 # SCRAPER PER SUMBER
 # =========================================================
 def scrape_cnbcindonesia(tema, max_halaman=3):
+    """
+    Search result CNBC di-load via JS/AJAX, jadi panggil langsung API JSON-nya.
+    Bonus: response ini sudah include isi artikel lengkap (strisi),
+    jadi gak perlu request tambahan ke halaman detail artikel.
+    """
     hasil = []
-    for p in range(1, max_halaman + 1):
-        url = f"https://www.cnbcindonesia.com/search?query={tema}&p={p}"
-        html = ambil_halaman(url)
-        if not html:
+    limit = 10
+    for p in range(max_halaman):
+        start = p * limit
+        params = {
+            "query": tema, "idtype": "1,4", "start": start,
+            "limit": limit, "isrelevance": 1
+        }
+        url = f"https://www.cnbcindonesia.com/api/v2/search-result?{urlencode(params)}"
+        raw = ambil_halaman(url)
+        if not raw:
             continue
-        soup = BeautifulSoup(html, "html.parser")
-        artikel_list = soup.find_all("article")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            break
+        if data.get("status") != "success":
+            break
+        artikel_list = data.get("data", [])
         if not artikel_list:
             break
+
         for art in artikel_list:
-            judul_tag = art.find("h2")
-            link_tag = art.find("a", href=True)
-            tanggal_tag = art.find("div", class_="text-cm") or art.find("span", class_="date")
-            judul = judul_tag.get_text(strip=True) if judul_tag else None
-            link = link_tag["href"] if link_tag else None
-            tanggal_teks = tanggal_tag.get_text(strip=True) if tanggal_tag else None
+            judul = art.get("strjudul")
+            link = art.get("url")
+            tanggal_teks = art.get("dtnewsdate")
+            tanggal_obj = None
+            if tanggal_teks:
+                try:
+                    tanggal_obj = datetime.strptime(tanggal_teks, "%Y/%m/%d %H:%M:%S")
+                except ValueError:
+                    tanggal_obj = parse_tanggal(tanggal_teks)
+
+            isi_html = art.get("strisi", "") or ""
+            isi_soup = BeautifulSoup(isi_html, "html.parser")
+            for unwanted in isi_soup.find_all(["script", "style", "table", "iframe"]):
+                unwanted.decompose()
+            paragraf = isi_soup.find_all("p")
+            isi_teks = " ".join(p.get_text(strip=True) for p in paragraf) if paragraf else isi_soup.get_text(strip=True)
+
             if judul and link:
                 hasil.append({
-                    "sumber": "CNBC Indonesia", "judul": judul, "link": link,
-                    "tanggal_teks": tanggal_teks, "tanggal": parse_tanggal(tanggal_teks)
+                    "sumber": "CNBC Indonesia",
+                    "judul": judul,
+                    "link": link,
+                    "ringkasan_redaksi": art.get("strringkasan"),
+                    "tanggal_teks": tanggal_teks,
+                    "tanggal": tanggal_obj,
+                    "konten": isi_teks,
                 })
+
+        if len(artikel_list) < limit:
+            break
+
     return hasil
 
 def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
-    """
-    Scraper Detik versi perbaikan berdasarkan struktur HTML asli halaman pencarian.
-    tanggal_mulai / tanggal_akhir: objek date/datetime Python (opsional).
-    Detik mendukung filter tanggal langsung lewat parameter fromdatex/todatex (format DD/MM/YYYY),
-    jadi kita serahkan filtering tanggal ke server Detik -- lebih akurat & lebih cepat.
-    """
     hasil = []
-
     fromdatex = tanggal_mulai.strftime("%d/%m/%Y") if tanggal_mulai else None
     todatex = tanggal_akhir.strftime("%d/%m/%Y") if tanggal_akhir else None
 
     for p in range(1, max_halaman + 1):
         url = f"https://www.detik.com/search/searchall?query={tema}&result_type=latest&page={p}"
         if fromdatex and todatex:
-            from urllib.parse import quote
             url += f"&fromdatex={quote(fromdatex, safe='')}&todatex={quote(todatex, safe='')}"
 
         html = ambil_halaman(url)
@@ -137,7 +268,6 @@ def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
             tanggal_obj = None
             tanggal_teks = None
             if tanggal_span:
-                # d-time berisi unix timestamp -- jauh lebih akurat daripada teks "2 jam yang lalu"
                 unix_ts = tanggal_span.get("d-time")
                 tanggal_teks = tanggal_span.get("title") or tanggal_span.get_text(strip=True)
                 if unix_ts:
@@ -153,7 +283,7 @@ def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
                     "sumber": f"Detik ({sumber_tag.get_text(strip=True) if sumber_tag else '-'})",
                     "judul": judul,
                     "link": link,
-                    "ringkasan": desc_tag.get_text(strip=True) if desc_tag else None,
+                    "ringkasan_redaksi": desc_tag.get_text(strip=True) if desc_tag else None,
                     "tanggal_teks": tanggal_teks,
                     "tanggal": tanggal_obj
                 })
@@ -184,15 +314,73 @@ def scrape_kompas(tema, max_halaman=3):
                 })
     return hasil
 
-SCRAPER_PER_SUMBER = {"CNBC Indonesia": scrape_cnbcindonesia, "Detik": scrape_detik, "Kompas": scrape_kompas}
+def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+    """
+    Republika server-side rendered, jadi requests+BeautifulSoup biasa cukup.
+    Mendukung filter tanggal langsung via parameter URL (startdate/enddate, format YYYY-MM-DD).
+    NOTE: parameter pagination ("page") best-effort, belum sempat diverifikasi
+    untuk hasil >1 halaman -- tolong dicek manual kalau ada anomali.
+    """
+    hasil = []
+    base_url = "https://republika.co.id/search/v3/all"
+
+    for p in range(1, max_halaman + 1):
+        params = {"q": tema, "search_type": "latest"}
+        if tanggal_mulai and tanggal_akhir:
+            params["latest_date"] = "custom"
+            params["startdate"] = tanggal_mulai.strftime("%Y-%m-%d")
+            params["enddate"] = tanggal_akhir.strftime("%Y-%m-%d")
+        if p > 1:
+            params["page"] = p
+
+        url = f"{base_url}?{urlencode(params)}"
+        html = ambil_halaman(url)
+        if not html:
+            continue
+        soup = BeautifulSoup(html, "html.parser")
+        artikel_list = soup.select("div.news-item")
+        if not artikel_list:
+            break
+
+        for art in artikel_list:
+            judul_tag = art.select_one("div.news-title a")
+            desc_tag = art.select_one("div.news-description")
+            tanggal_tag = art.select_one("div.news-source")
+
+            if not judul_tag:
+                continue
+
+            judul = judul_tag.get_text(strip=True)
+            link = judul_tag.get("href")
+            tanggal_teks = tanggal_tag.get_text(strip=True) if tanggal_tag else None
+
+            if judul and link:
+                hasil.append({
+                    "sumber": "Republika",
+                    "judul": judul,
+                    "link": link,
+                    "ringkasan_redaksi": desc_tag.get_text(strip=True) if desc_tag else None,
+                    "tanggal_teks": tanggal_teks,
+                    "tanggal": parse_tanggal(tanggal_teks)
+                })
+    return hasil
+
+SCRAPER_PER_SUMBER = {
+    "CNBC Indonesia": scrape_cnbcindonesia,
+    "Detik": scrape_detik,
+    "Kompas": scrape_kompas,
+    "Republika": scrape_republika,
+}
+SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika"}
 
 # =========================================================
-# AMBIL ISI ARTIKEL
+# AMBIL ISI ARTIKEL (untuk sumber yang gak include konten lengkap di search result)
 # =========================================================
 SELECTOR_KONTEN = {
-    "cnbcindonesia.com": ("div", {"class_": "detail-text"}),
+    "cnbcindonesia.com": ("div", {"class_": "detail-text"}),  # fallback, biasanya udah ada dari API
     "detik.com": ("div", {"class_": "detail__body-text"}),
     "kompas.com": ("div", {"class_": "read__content"}),
+    "republika.co.id": ("div", {"class_": "article-content"}),  # best-effort dari CSS halaman search, tolong dicek
 }
 
 def scrape_isi_artikel(url):
@@ -222,8 +410,7 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
         if progress_callback:
             progress_callback(f"Mengambil dari {nama_sumber}...")
         try:
-            if nama_sumber == "Detik":
-                # Detik mendukung filter tanggal langsung di request (lebih akurat)
+            if nama_sumber in SUMBER_DENGAN_FILTER_TANGGAL_NATIVE:
                 semua_hasil.extend(fungsi(
                     tema, max_halaman=max_halaman,
                     tanggal_mulai=tanggal_mulai, tanggal_akhir=tanggal_akhir
@@ -242,7 +429,10 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
             hasil_unik.append(item)
 
     dt_mulai = datetime.combine(tanggal_mulai, datetime.min.time()) if tanggal_mulai else None
-    dt_akhir = datetime.combine(tanggal_akhir, datetime.min.time()) if tanggal_akhir else None
+    # PENTING: dt_akhir pakai max.time() (23:59:59), bukan min.time(), supaya artikel
+    # yang terbit di "hari akhir" (termasuk hari ini) gak ke-exclude gara-gara dianggap
+    # selesai jam 00:00:00. Ini bugfix dari versi sebelumnya.
+    dt_akhir = datetime.combine(tanggal_akhir, datetime.max.time()) if tanggal_akhir else None
 
     hasil_final = []
     for item in hasil_unik:
@@ -259,9 +449,16 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
     if ambil_konten:
         total = len(hasil_final)
         for i, item in enumerate(hasil_final, 1):
-            if progress_callback:
-                progress_callback(f"Mengambil isi [{i}/{total}]: {item['judul'][:60]}...")
-            item["konten"] = scrape_isi_artikel(item["link"])
+            if not item.get("konten"):
+                if progress_callback:
+                    progress_callback(f"Mengambil isi [{i}/{total}]: {item['judul'][:60]}...")
+                item["konten"] = scrape_isi_artikel(item["link"])
+
+            konten = item.get("konten", "")
+            if konten and konten not in KONTEN_INVALID:
+                if progress_callback:
+                    progress_callback(f"Meringkas [{i}/{total}]: {item['judul'][:60]}...")
+                item["ringkasan"] = ringkas_ekstraktif(konten)
 
     return hasil_final
 
@@ -269,7 +466,7 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
 # UI STREAMLIT
 # =========================================================
 st.title("📰 Scraper Berita Indonesia")
-st.caption("Cari berita dari CNBC Indonesia, Detik, dan Kompas berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
+st.caption("Cari berita dari CNBC Indonesia, Detik, Kompas, dan Republika berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
 
 with st.sidebar:
     st.header("⚙️ Pengaturan Pencarian")
@@ -280,15 +477,22 @@ with st.sidebar:
         default=list(SCRAPER_PER_SUMBER.keys())
     )
     pakai_filter_tanggal = st.checkbox("Filter berdasarkan tanggal", value=False)
-    tanggal_mulai, tanggal_akhir = None, None
     if pakai_filter_tanggal:
         col1, col2 = st.columns(2)
         with col1:
             tanggal_mulai = st.date_input("Dari tanggal")
         with col2:
             tanggal_akhir = st.date_input("Sampai tanggal")
+    else:
+        tanggal_akhir = datetime.now().date()
+        tanggal_mulai = tanggal_akhir - timedelta(days=1)
+        st.caption(
+            f"ℹ️ Tanpa filter manual, pencarian otomatis dibatasi ke "
+            f"**{tanggal_mulai.strftime('%d %b %Y')} – {tanggal_akhir.strftime('%d %b %Y')}** "
+            f"biar lebih cepat & hemat resource. Centang opsi di atas untuk ubah rentang."
+        )
     max_halaman = st.slider("Jumlah halaman per sumber", min_value=1, max_value=10, value=3)
-    ambil_konten = st.checkbox("Ambil isi lengkap artikel (lebih lambat)", value=True)
+    ambil_konten = st.checkbox("Ambil isi lengkap artikel + ringkasan otomatis (lebih lambat)", value=True)
     tombol_cari = st.button("🔍 Cari Berita", type="primary", use_container_width=True)
 
 if "hasil" not in st.session_state:
@@ -305,7 +509,7 @@ if tombol_cari:
 
         def progress_callback(msg):
             progress_log.append(msg)
-            status_box.info("\n\n".join(progress_log[-5:]))  # tampilkan 5 log terakhir
+            status_box.info("\n\n".join(progress_log[-5:]))
 
         with st.spinner("Sedang mengambil data..."):
             hasil = cari_berita(
@@ -329,7 +533,6 @@ hasil = st.session_state.hasil
 if hasil:
     st.subheader(f"Hasil: {len(hasil)} artikel")
 
-    # Filter tampilan per sumber
     sumber_unik = sorted(set(h["sumber"] for h in hasil))
     filter_tampil = st.multiselect("Tampilkan sumber:", sumber_unik, default=sumber_unik)
     hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
@@ -340,7 +543,31 @@ if hasil:
             st.markdown(f"**Link:** [{item['link']}]({item['link']})")
             if item.get("catatan"):
                 st.warning(item["catatan"])
-            if "konten" in item:
+
+            if item.get("ringkasan"):
+                st.markdown("**📝 Ringkasan Otomatis:**")
+                st.write(item["ringkasan"])
+
+            konten_valid = item.get("konten") and item["konten"] not in KONTEN_INVALID
+
+            if item.get("ringkasan_ai"):
+                st.markdown("**✨ Ringkasan AI (Gemini):**")
+                st.write(item["ringkasan_ai"])
+            elif konten_valid:
+                if GEMINI_API_KEY:
+                    if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
+                        with st.spinner("Meringkas dengan Gemini..."):
+                            hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
+                        if hasil_ai:
+                            item["ringkasan_ai"] = hasil_ai
+                            st.rerun()
+                        else:
+                            st.error(f"Gagal membuat ringkasan AI: {error}")
+                else:
+                    st.caption("💡 Set `GEMINI_API_KEY` di Streamlit secrets untuk mengaktifkan ringkasan AI.")
+
+            if item.get("konten"):
+                st.markdown("**📰 Isi Lengkap:**")
                 st.write(item["konten"])
 
     # ---------------- EKSPOR ----------------
@@ -348,7 +575,8 @@ if hasil:
 
     def buat_csv(data):
         output = io.StringIO()
-        kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal", "konten", "catatan"]
+        kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal",
+                 "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "konten", "catatan"]
         writer = csv.DictWriter(output, fieldnames=kolom, extrasaction="ignore")
         writer.writeheader()
         for item in data:
