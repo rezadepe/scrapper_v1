@@ -90,6 +90,23 @@ def parse_tanggal(teks_tanggal):
     except (ValueError, OverflowError):
         return None
 
+def bersihkan_isi_html(isi_html):
+    """
+    Konversi HTML isi artikel jadi teks polos. Pakai separator spasi di get_text()
+    SEBELUM strip, supaya kata yang dipisah tag inline (mis. <span> berwarna untuk
+    keyword/tag) tidak nempel jadi satu kata (mis. 'DPPPSIAhmad' -> 'DPP PSI Ahmad').
+    Juga buang tabel "baca juga"/"pilihan redaksi", iframe chart, dan script.
+    """
+    if not isi_html:
+        return ""
+    soup = BeautifulSoup(isi_html, "html.parser")
+    for unwanted in soup.find_all(["script", "style", "table", "iframe"]):
+        unwanted.decompose()
+    paragraf = soup.find_all("p")
+    sumber_teks = paragraf if paragraf else [soup]
+    teks = " ".join(tag.get_text(" ", strip=True) for tag in sumber_teks)
+    return re.sub(r"\s+", " ", teks).strip()
+
 # =========================================================
 # RINGKASAN EKSTRAKTIF -- LOKAL, GRATIS, OTOMATIS UNTUK SEMUA ARTIKEL
 # Pakai TextRank: cosine similarity antar kalimat (setelah stopword removal
@@ -221,16 +238,76 @@ def scrape_cnbcindonesia(tema, max_halaman=3):
                 except ValueError:
                     tanggal_obj = parse_tanggal(tanggal_teks)
 
-            isi_html = art.get("strisi", "") or ""
-            isi_soup = BeautifulSoup(isi_html, "html.parser")
-            for unwanted in isi_soup.find_all(["script", "style", "table", "iframe"]):
-                unwanted.decompose()
-            paragraf = isi_soup.find_all("p")
-            isi_teks = " ".join(p.get_text(strip=True) for p in paragraf) if paragraf else isi_soup.get_text(strip=True)
+            isi_teks = bersihkan_isi_html(art.get("strisi", ""))
 
             if judul and link:
                 hasil.append({
                     "sumber": "CNBC Indonesia",
+                    "judul": judul,
+                    "link": link,
+                    "ringkasan_redaksi": art.get("strringkasan"),
+                    "tanggal_teks": tanggal_teks,
+                    "tanggal": tanggal_obj,
+                    "konten": isi_teks,
+                })
+
+        if len(artikel_list) < limit:
+            break
+
+    return hasil
+
+def scrape_cnnindonesia(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+    """
+    Sama seperti CNBC (satu grup CMS), search result CNN di-load via JS/AJAX.
+    Endpoint asli ditemukan dari field 'payload' (base64) di response API:
+    /api/v3/search?query=..&idtype=1&start=..&limit=..&fromdate=..&todate=..&isrelevance=1
+    Format tanggal API: YYYY/MM/DD (beda dari format URL publik DD/MM/YYYY).
+    Bonus: response sudah include isi artikel lengkap (strisi).
+    """
+    hasil = []
+    limit = 10
+    for p in range(max_halaman):
+        start = p * limit
+        params = {
+            "query": tema, "idtype": "1", "start": start,
+            "limit": limit, "isrelevance": 1
+        }
+        if tanggal_mulai and tanggal_akhir:
+            params["fromdate"] = tanggal_mulai.strftime("%Y/%m/%d")
+            params["todate"] = tanggal_akhir.strftime("%Y/%m/%d")
+
+        url = f"https://www.cnnindonesia.com/api/v3/search?{urlencode(params)}"
+        raw = ambil_halaman(url)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            break
+        if data.get("status") != "success":
+            break
+        artikel_list = data.get("data", [])
+        if not artikel_list:
+            break
+
+        for art in artikel_list:
+            judul = art.get("strjudul")
+            link = art.get("url")
+            tanggal_teks = art.get("dtnewsdate")
+            tanggal_obj = None
+            if tanggal_teks:
+                try:
+                    tanggal_obj = datetime.strptime(tanggal_teks, "%Y/%m/%d %H:%M:%S")
+                except ValueError:
+                    tanggal_obj = parse_tanggal(tanggal_teks)
+
+            # strisi sudah HTML lengkap -> bersihkan tabel "Pilihan Redaksi"/"Lihat Juga",
+            # iframe, script, lalu ambil teks dari <p>
+            isi_teks = bersihkan_isi_html(art.get("strisi", ""))
+
+            if judul and link:
+                hasil.append({
+                    "sumber": "CNN Indonesia",
                     "judul": judul,
                     "link": link,
                     "ringkasan_redaksi": art.get("strringkasan"),
@@ -376,11 +453,12 @@ def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None
 
 SCRAPER_PER_SUMBER = {
     "CNBC Indonesia": scrape_cnbcindonesia,
+    "CNN Indonesia": scrape_cnnindonesia,
     "Detik": scrape_detik,
     "Kompas": scrape_kompas,
     "Republika": scrape_republika,
 }
-SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika"}
+SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia"}
 
 # =========================================================
 # AMBIL ISI ARTIKEL (untuk sumber yang gak include konten lengkap di search result)
@@ -405,8 +483,9 @@ def scrape_isi_artikel(url):
             for unwanted in kontainer.find_all(["script", "style", "div"], class_=re.compile("baca-juga|ads|related", re.I)):
                 unwanted.decompose()
             paragraf = kontainer.find_all("p")
-            isi = " ".join(p.get_text(strip=True) for p in paragraf)
-            return isi if isi.strip() else "Konten kosong"
+            isi = " ".join(p.get_text(" ", strip=True) for p in paragraf)
+            isi = re.sub(r"\s+", " ", isi).strip()
+            return isi if isi else "Konten kosong"
     return "Selector tidak ditemukan untuk domain ini"
 
 # =========================================================
@@ -475,7 +554,7 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
 # UI STREAMLIT
 # =========================================================
 st.title("📰 Scraper Berita Indonesia")
-st.caption("Cari berita dari CNBC Indonesia, Detik, Kompas, dan Republika berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
+st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, dan Republika berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
 
 with st.sidebar:
     st.header("⚙️ Pengaturan Pencarian")
