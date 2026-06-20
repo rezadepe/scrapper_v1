@@ -28,7 +28,16 @@ try:
 except Exception:
     GEMINI_API_KEY = None
 
+try:
+    AI_SUMMARY_PASSWORD = st.secrets.get("AI_SUMMARY_PASSWORD")
+except Exception:
+    AI_SUMMARY_PASSWORD = None
+
 GEMINI_MODEL = "gemini-flash-latest"
+PESAN_HUBUNGI_DEVELOPER = (
+    "Password salah. Fitur ringkasan AI ini terbatas — "
+    "hubungi developer aplikasi untuk mendapatkan akses."
+)
 
 # =========================================================
 # SESSION & UTIL (sama seperti versi sebelumnya)
@@ -495,6 +504,27 @@ with st.sidebar:
     ambil_konten = st.checkbox("Ambil isi lengkap artikel + ringkasan otomatis (lebih lambat)", value=True)
     tombol_cari = st.button("🔍 Cari Berita", type="primary", use_container_width=True)
 
+    st.divider()
+    st.subheader("✨ Ringkasan AI (Fitur Terbatas)")
+
+    if "ai_unlocked" not in st.session_state:
+        st.session_state.ai_unlocked = False
+
+    if not GEMINI_API_KEY:
+        st.caption("Fitur belum dikonfigurasi developer. Coba lagi nanti.")
+    elif st.session_state.ai_unlocked:
+        st.success("✅ Fitur ringkasan AI aktif untuk sesi ini.")
+    else:
+        with st.form("form_password_ai", clear_on_submit=True):
+            password_input = st.text_input("Password akses", type="password")
+            submit_password = st.form_submit_button("Aktifkan", use_container_width=True)
+        if submit_password:
+            if AI_SUMMARY_PASSWORD and password_input == AI_SUMMARY_PASSWORD:
+                st.session_state.ai_unlocked = True
+                st.rerun()
+            else:
+                st.error(PESAN_HUBUNGI_DEVELOPER)
+
 if "hasil" not in st.session_state:
     st.session_state.hasil = []
 
@@ -554,7 +584,11 @@ if hasil:
                 st.markdown("**✨ Ringkasan AI (Gemini):**")
                 st.write(item["ringkasan_ai"])
             elif konten_valid:
-                if GEMINI_API_KEY:
+                if not GEMINI_API_KEY:
+                    st.caption("💡 Fitur ringkasan AI belum dikonfigurasi developer.")
+                elif not st.session_state.get("ai_unlocked", False):
+                    st.caption("🔒 Fitur ringkasan AI terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+                else:
                     if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
                         with st.spinner("Meringkas dengan Gemini..."):
                             hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
@@ -563,8 +597,6 @@ if hasil:
                             st.rerun()
                         else:
                             st.error(f"Gagal membuat ringkasan AI: {error}")
-                else:
-                    st.caption("💡 Set `GEMINI_API_KEY` di Streamlit secrets untuk mengaktifkan ringkasan AI.")
 
             if item.get("konten"):
                 st.markdown("**📰 Isi Lengkap:**")
