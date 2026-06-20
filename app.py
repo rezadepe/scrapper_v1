@@ -491,7 +491,7 @@ def scrape_isi_artikel(url):
 # =========================================================
 # FUNGSI UTAMA PENCARIAN
 # =========================================================
-def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, progress_callback=None):
+def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis=False, progress_callback=None):
     semua_hasil = []
     for nama_sumber in sumber_dipilih:
         fungsi = SCRAPER_PER_SUMBER[nama_sumber]
@@ -515,6 +515,17 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
         if item["link"] not in sudah_dilihat:
             sudah_dilihat.add(item["link"])
             hasil_unik.append(item)
+
+    # Filter frasa persis -- dilakukan SEBELUM ambil isi lengkap/ringkasan, supaya
+    # artikel yang gak relevan langsung dibuang duluan (hemat resource scraping
+    # & summarization). Dicek terhadap judul + ringkasan redaksi (kalau ada),
+    # karena keduanya sudah tersedia dari hasil listing tanpa request tambahan.
+    if match_persis and tema.strip():
+        frasa = tema.strip().lower()
+        hasil_unik = [
+            item for item in hasil_unik
+            if frasa in f"{item.get('judul', '')} {item.get('ringkasan_redaksi') or ''}".lower()
+        ]
 
     dt_mulai = datetime.combine(tanggal_mulai, datetime.min.time()) if tanggal_mulai else None
     # PENTING: dt_akhir pakai max.time() (23:59:59), bukan min.time(), supaya artikel
@@ -559,6 +570,13 @@ st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, dan R
 with st.sidebar:
     st.header("⚙️ Pengaturan Pencarian")
     tema = st.text_input("Tema / kata kunci berita", placeholder="contoh: kaesang")
+    match_persis = st.checkbox(
+        "Cari frasa persis (exact match)",
+        value=False,
+        help="Kalau tema lebih dari 1 kata (mis. 'indonesia esport'), hanya tampilkan "
+             "artikel yang judul/ringkasannya benar-benar mengandung frasa itu persis, "
+             "bukan yang cuma mengandung salah satu katanya saja."
+    )
     sumber_dipilih = st.multiselect(
         "Sumber berita",
         options=list(SCRAPER_PER_SUMBER.keys()),
@@ -628,6 +646,7 @@ if tombol_cari:
                 tanggal_akhir=tanggal_akhir,
                 max_halaman=max_halaman,
                 ambil_konten=ambil_konten,
+                match_persis=match_persis,
                 progress_callback=progress_callback,
             )
         status_box.empty()
