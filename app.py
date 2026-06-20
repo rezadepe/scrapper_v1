@@ -66,14 +66,18 @@ def buat_session():
 
 SESSION = buat_session()
 
-def ambil_halaman(url, timeout=10):
+def ambil_halaman(url, timeout=10, progress_callback=None):
     try:
         time.sleep(random.uniform(0.8, 1.6))
         resp = SESSION.get(url, timeout=timeout)
         if resp.status_code == 200:
             return resp.text
+        if progress_callback:
+            progress_callback(f"⚠️ HTTP {resp.status_code}: {url[:90]}")
         return None
-    except requests.RequestException:
+    except requests.RequestException as e:
+        if progress_callback:
+            progress_callback(f"⚠️ Gagal akses ({type(e).__name__}): {url[:90]}")
         return None
 
 def parse_tanggal(teks_tanggal):
@@ -309,11 +313,17 @@ def buat_dataframe_statistik(hasil_tampil):
 # =========================================================
 # SCRAPER PER SUMBER
 # =========================================================
-def scrape_cnbcindonesia(tema, max_halaman=3):
+def scrape_cnbcindonesia(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
     """
     Search result CNBC di-load via JS/AJAX, jadi panggil langsung API JSON-nya.
     Bonus: response ini sudah include isi artikel lengkap (strisi),
     jadi gak perlu request tambahan ke halaman detail artikel.
+
+    PENTING: fromdate/todate WAJIB dikirim kalau ada filter tanggal -- tanpa ini,
+    isrelevance=1 (sort relevansi, bukan terbaru) bisa balikin artikel lama yang
+    gak nyangkut sama sekali di rentang tanggal manapun, bikin hasil akhir
+    kosong total setelah difilter client-side. Format sama kayak CNN: YYYY/MM/DD
+    (CNBC & CNN satu platform/CMS yang sama).
     """
     hasil = []
     limit = 10
@@ -323,15 +333,22 @@ def scrape_cnbcindonesia(tema, max_halaman=3):
             "query": tema, "idtype": "1,4", "start": start,
             "limit": limit, "isrelevance": 1
         }
+        if tanggal_mulai and tanggal_akhir:
+            params["fromdate"] = tanggal_mulai.strftime("%Y/%m/%d")
+            params["todate"] = tanggal_akhir.strftime("%Y/%m/%d")
         url = f"https://www.cnbcindonesia.com/api/v2/search-result?{urlencode(params)}"
-        raw = ambil_halaman(url)
+        raw = ambil_halaman(url, progress_callback=progress_callback)
         if not raw:
             continue
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
+            if progress_callback:
+                progress_callback(f"⚠️ CNBC: respons bukan JSON valid di halaman {p+1}")
             break
         if data.get("status") != "success":
+            if progress_callback:
+                progress_callback(f"⚠️ CNBC: status respons '{data.get('status')}' (bukan 'success')")
             break
         artikel_list = data.get("data", [])
         if not artikel_list:
@@ -366,7 +383,7 @@ def scrape_cnbcindonesia(tema, max_halaman=3):
 
     return hasil
 
-def scrape_cnnindonesia(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+def scrape_cnnindonesia(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
     """
     Sama seperti CNBC (satu grup CMS), search result CNN di-load via JS/AJAX.
     Endpoint asli ditemukan dari field 'payload' (base64) di response API:
@@ -387,7 +404,7 @@ def scrape_cnnindonesia(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=N
             params["todate"] = tanggal_akhir.strftime("%Y/%m/%d")
 
         url = f"https://www.cnnindonesia.com/api/v3/search?{urlencode(params)}"
-        raw = ambil_halaman(url)
+        raw = ambil_halaman(url, progress_callback=progress_callback)
         if not raw:
             continue
         try:
@@ -431,7 +448,7 @@ def scrape_cnnindonesia(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=N
 
     return hasil
 
-def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
     hasil = []
     fromdatex = tanggal_mulai.strftime("%d/%m/%Y") if tanggal_mulai else None
     todatex = tanggal_akhir.strftime("%d/%m/%Y") if tanggal_akhir else None
@@ -441,7 +458,7 @@ def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
         if fromdatex and todatex:
             url += f"&fromdatex={quote(fromdatex, safe='')}&todatex={quote(todatex, safe='')}"
 
-        html = ambil_halaman(url)
+        html = ambil_halaman(url, progress_callback=progress_callback)
         if not html:
             continue
         soup = BeautifulSoup(html, "html.parser")
@@ -485,11 +502,11 @@ def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
                 })
     return hasil
 
-def scrape_kompas(tema, max_halaman=3):
+def scrape_kompas(tema, max_halaman=3, progress_callback=None):
     hasil = []
     for p in range(1, max_halaman + 1):
         url = f"https://search.kompas.com/search?q={tema}&page={p}"
-        html = ambil_halaman(url)
+        html = ambil_halaman(url, progress_callback=progress_callback)
         if not html:
             continue
         soup = BeautifulSoup(html, "html.parser")
@@ -510,7 +527,7 @@ def scrape_kompas(tema, max_halaman=3):
                 })
     return hasil
 
-def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
     """
     Republika server-side rendered, jadi requests+BeautifulSoup biasa cukup.
     Mendukung filter tanggal langsung via parameter URL (startdate/enddate, format YYYY-MM-DD).
@@ -530,7 +547,7 @@ def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None
             params["page"] = p
 
         url = f"{base_url}?{urlencode(params)}"
-        html = ambil_halaman(url)
+        html = ambil_halaman(url, progress_callback=progress_callback)
         if not html:
             continue
         soup = BeautifulSoup(html, "html.parser")
@@ -561,7 +578,7 @@ def scrape_republika(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None
                 })
     return hasil
 
-def scrape_liputan6(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None):
+def scrape_liputan6(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
     """
     Liputan6 server-side rendered, requests+BeautifulSoup cukup.
     Native date filter via from_date/to_date (format DD/MM/YYYY).
@@ -584,12 +601,18 @@ def scrape_liputan6(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None)
             params["page"] = p
 
         url = f"{base_url}?{urlencode(params)}"
-        html = ambil_halaman(url)
+        html = ambil_halaman(url, progress_callback=progress_callback)
         if not html:
             continue
         soup = BeautifulSoup(html, "html.parser")
         artikel_list = soup.select("article.articles--iridescent-list--item")
         if not artikel_list:
+            if progress_callback and p == 1:
+                progress_callback(
+                    f"⚠️ Liputan6: halaman berhasil diambil ({len(html)} karakter) "
+                    f"tapi 0 artikel cocok dengan selector -- kemungkinan struktur "
+                    f"HTML berubah atau diblokir/disuguhi halaman beda dari biasanya."
+                )
             break
 
         for art in artikel_list:
@@ -632,7 +655,7 @@ SCRAPER_PER_SUMBER = {
     "Republika": scrape_republika,
     "Liputan6": scrape_liputan6,
 }
-SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6"}
+SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6", "CNBC Indonesia"}
 
 # =========================================================
 # AMBIL ISI ARTIKEL (untuk sumber yang gak include konten lengkap di search result)
@@ -645,8 +668,8 @@ SELECTOR_KONTEN = {
     "liputan6.com": ("div", {"class_": "article-content-body"}),  # ditemukan dari JS brand-safety checker di halaman search
 }
 
-def scrape_isi_artikel(url):
-    html = ambil_halaman(url)
+def scrape_isi_artikel(url, progress_callback=None):
+    html = ambil_halaman(url, progress_callback=progress_callback)
     if not html:
         return "Gagal mengambil halaman"
     soup = BeautifulSoup(html, "html.parser")
@@ -676,10 +699,11 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
             if nama_sumber in SUMBER_DENGAN_FILTER_TANGGAL_NATIVE:
                 semua_hasil.extend(fungsi(
                     tema, max_halaman=max_halaman,
-                    tanggal_mulai=tanggal_mulai, tanggal_akhir=tanggal_akhir
+                    tanggal_mulai=tanggal_mulai, tanggal_akhir=tanggal_akhir,
+                    progress_callback=progress_callback
                 ))
             else:
-                semua_hasil.extend(fungsi(tema, max_halaman=max_halaman))
+                semua_hasil.extend(fungsi(tema, max_halaman=max_halaman, progress_callback=progress_callback))
         except Exception as e:
             if progress_callback:
                 progress_callback(f"[ERROR] {nama_sumber}: {e}")
@@ -726,7 +750,7 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
             if not item.get("konten"):
                 if progress_callback:
                     progress_callback(f"Mengambil isi [{i}/{total}]: {item['judul'][:60]}...")
-                item["konten"] = scrape_isi_artikel(item["link"])
+                item["konten"] = scrape_isi_artikel(item["link"], progress_callback=progress_callback)
 
             konten = item.get("konten", "")
             if konten and konten not in KONTEN_INVALID:
