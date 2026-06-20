@@ -8,3 +8,4 @@ networkx
 wordcloud
 matplotlib
 pandas
+google-generativeai
