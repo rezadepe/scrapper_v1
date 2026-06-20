@@ -5,3 +5,6 @@ python-dateutil
 Sastrawi
 scikit-learn
 networkx
+wordcloud
+matplotlib
+pandas
