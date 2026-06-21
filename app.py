@@ -406,6 +406,22 @@ def cocok_frasa_persis(teks, frasa):
     pola = r"\b" + re.escape(frasa_norm) + r"\b"
     return re.search(pola, teks_norm) is not None
 
+def cocok_semua_kata(teks, frasa):
+    """Cek apakah SEMUA kata di frasa pencarian muncul di teks -- gak harus
+    nempel/berurutan kayak cocok_frasa_persis, boleh tersebar di kalimat
+    berbeda, asal semuanya ada di 1 teks (artikel) yang sama. Perlu isi
+    lengkap artikel buat akurat -- gak cukup cuma judul/cuplikan singkat."""
+    if not teks or not frasa:
+        return False
+    teks_lower = teks.lower()
+    kata_list = frasa.lower().split()
+    if not kata_list:
+        return False
+    return all(
+        re.search(r"\b" + re.escape(kata) + r"\b", teks_lower)
+        for kata in kata_list
+    )
+
 # =========================================================
 # SCRAPER PER SUMBER
 # =========================================================
@@ -928,7 +944,7 @@ def _scrape_satu_sumber(nama_sumber, tema, max_halaman, tanggal_mulai, tanggal_a
     except Exception as e:
         return nama_sumber, [], local_log, str(e)
 
-def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis=False, progress_callback=None):
+def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis=False, match_semua_kata=False, progress_callback=None):
     semua_hasil = []
 
     # Scraping paralel per sumber (I/O-bound, jadi thread cocok dan jauh lebih
@@ -1010,10 +1026,20 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
             item["sentimen"] = label
             item["sentimen_skor"] = skor
 
+    # Filter "semua kata" -- BEDA dari frasa persis, ini jalan SETELAH isi
+    # lengkap di-fetch (di atas), karena wajib cek seluruh isi artikel, bukan
+    # cuma judul/cuplikan. Trade-off: gak bisa "buang duluan sebelum fetch"
+    # kayak frasa persis, semua kandidat harus selesai di-fetch dulu baru disaring.
+    if match_semua_kata and tema.strip():
+        hasil_final = [
+            item for item in hasil_final
+            if cocok_semua_kata(f"{item.get('judul', '')} {item.get('konten') or ''}", tema)
+        ]
+
     return hasil_final
 
 @st.cache_data(ttl=900, show_spinner=False)
-def cari_berita_cached(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis, _progress_callback=None):
+def cari_berita_cached(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis, match_semua_kata=False, _progress_callback=None):
     """
     Wrapper cache (TTL 15 menit) di atas cari_berita. Parameter diawali underscore
     (_progress_callback) dikecualikan Streamlit dari cache key -- soalnya fungsi
@@ -1023,7 +1049,7 @@ def cari_berita_cached(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_h
     """
     return cari_berita(
         tema, sumber_dipilih, tanggal_mulai, tanggal_akhir,
-        max_halaman, ambil_konten, match_persis,
+        max_halaman, ambil_konten, match_persis, match_semua_kata,
         progress_callback=_progress_callback
     )
 
@@ -1185,13 +1211,28 @@ with st.sidebar:
     with st.expander("⚙️ Pengaturan Lanjutan"):
         max_halaman = st.slider("Jumlah halaman per sumber", min_value=1, max_value=10, value=3)
         ambil_konten = st.checkbox("Ambil isi lengkap artikel + ringkasan otomatis (lebih lambat)", value=True)
-        match_persis = st.checkbox(
-            "Cari frasa persis (exact match)",
-            value=False,
-            help="Kalau tema lebih dari 1 kata (mis. 'indonesia esport'), hanya tampilkan "
-                 "artikel yang judul/ringkasannya benar-benar mengandung frasa itu persis, "
-                 "bukan yang cuma mengandung salah satu katanya saja."
+        mode_pencarian = st.radio(
+            "Mode pencocokan kata kunci",
+            options=["Standar", "Frasa persis", "Semua kata (isi lengkap)"],
+            index=0,
+            help=(
+                "**Standar**: query dikirim apa adanya ke search engine tiap situs "
+                "(perilaku pencocokan tergantung algoritma masing-masing situs).\n\n"
+                "**Frasa persis**: hanya artikel yang judul/cuplikannya mengandung "
+                "frasa PERSIS nempel berurutan (mis. 'indonesia esport' harus nempel "
+                "persis begitu). Dicek SEBELUM ambil isi lengkap, jadi hemat resource "
+                "tapi cuma nyentuh judul + cuplikan singkat, bukan isi lengkap.\n\n"
+                "**Semua kata (isi lengkap)**: semua kata harus ada di artikel, BOLEH "
+                "tersebar di kalimat berbeda (mis. 'presiden indonesia optimis' cocok "
+                "walau 3 kata itu di 3 kalimat terpisah). Wajib cek isi lengkap, jadi "
+                "otomatis mengaktifkan opsi 'Ambil isi lengkap' di atas."
+            )
         )
+        match_persis = mode_pencarian == "Frasa persis"
+        match_semua_kata = mode_pencarian == "Semua kata (isi lengkap)"
+        if match_semua_kata and not ambil_konten:
+            ambil_konten = True
+            st.caption("ℹ️ 'Ambil isi lengkap' otomatis diaktifkan -- mode ini wajib cek isi artikel.")
 
     tombol_cari = st.button("🔍 Cari Berita", type="primary", use_container_width=True)
 
@@ -1244,6 +1285,7 @@ with tab_cari:
                     max_halaman=max_halaman,
                     ambil_konten=ambil_konten,
                     match_persis=match_persis,
+                    match_semua_kata=match_semua_kata,
                     _progress_callback=progress_callback,
                 )
             status_box.empty()
