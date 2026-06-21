@@ -22,6 +22,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+from supabase import create_client
 
 # =========================================================
 # KONFIGURASI HALAMAN
@@ -43,6 +44,17 @@ PESAN_HUBUNGI_DEVELOPER = (
     "Password salah. Fitur ringkasan AI ini terbatas — "
     "hubungi developer aplikasi untuk mendapatkan akses."
 )
+
+@st.cache_resource
+def get_supabase_client():
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        return create_client(url, key)
+    except Exception:
+        return None
+
+SUPABASE = get_supabase_client()
 
 # =========================================================
 # SESSION & UTIL (sama seperti versi sebelumnya)
@@ -900,6 +912,115 @@ def cari_berita_cached(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_h
     )
 
 # =========================================================
+# MONITORING: WATCHLIST & RIWAYAT (Supabase)
+# =========================================================
+def ambil_watchlist():
+    """Ambil semua topik watchlist yang masih aktif (belum di-soft-delete)."""
+    if not SUPABASE:
+        return []
+    try:
+        resp = (SUPABASE.table("watchlist")
+                .select("*")
+                .eq("aktif", True)
+                .order("dibuat_pada", desc=True)
+                .execute())
+        return resp.data or []
+    except Exception as e:
+        st.error(f"Gagal ambil watchlist: {e}")
+        return []
+
+def tambah_watchlist(nama_topik, kata_kunci, sumber_dipilih, exact_match=False):
+    if not SUPABASE:
+        return None
+    try:
+        resp = SUPABASE.table("watchlist").insert({
+            "nama_topik": nama_topik,
+            "kata_kunci": kata_kunci,
+            "sumber_dipilih": sumber_dipilih,
+            "exact_match": exact_match,
+        }).execute()
+        return resp.data
+    except Exception as e:
+        st.error(f"Gagal tambah watchlist: {e}")
+        return None
+
+def hapus_watchlist(watchlist_id):
+    """Soft delete (set aktif=False) -- bukan DELETE beneran, supaya riwayat
+    artikel_history yang sudah terkumpul tetap utuh kalau topiknya diaktifkan lagi."""
+    if not SUPABASE:
+        return False
+    try:
+        SUPABASE.table("watchlist").update({"aktif": False}).eq("id", watchlist_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Gagal hapus watchlist: {e}")
+        return False
+
+def simpan_artikel_history(watchlist_id, hasil_artikel):
+    """
+    Insert artikel baru ke riwayat. Pakai upsert dengan ignore_duplicates=True
+    di kombinasi kolom (watchlist_id, link) -- artikel yang linknya sudah pernah
+    tersimpan buat watchlist itu otomatis dilewati oleh database sendiri (sesuai
+    UNIQUE constraint di skema), jadi gak perlu cek manual satu-satu di sisi app.
+    Return jumlah baris yang BENERAN baru tersimpan.
+    """
+    if not SUPABASE or not hasil_artikel:
+        return 0
+    baris = []
+    for item in hasil_artikel:
+        baris.append({
+            "watchlist_id": watchlist_id,
+            "sumber": item.get("sumber"),
+            "judul": item.get("judul"),
+            "link": item.get("link"),
+            "tanggal_publish": item["tanggal"].isoformat() if item.get("tanggal") else None,
+            "ringkasan": item.get("ringkasan") or item.get("ringkasan_redaksi"),
+            "sentimen": item.get("sentimen"),
+            "sentimen_skor": item.get("sentimen_skor"),
+        })
+    try:
+        resp = SUPABASE.table("artikel_history").upsert(
+            baris, on_conflict="watchlist_id,link", ignore_duplicates=True
+        ).execute()
+        return len(resp.data) if resp.data else 0
+    except Exception as e:
+        st.error(f"Gagal simpan riwayat: {e}")
+        return 0
+
+def ambil_ringkasan_watchlist(watchlist_id):
+    """Ringkasan ringan buat ditampilkan di kartu watchlist: total artikel
+    tersimpan & kapan checkpoint terakhir dilakukan."""
+    if not SUPABASE:
+        return {"total": 0, "terakhir": None}
+    try:
+        resp = (SUPABASE.table("artikel_history")
+                .select("waktu_checkpoint", count="exact")
+                .eq("watchlist_id", watchlist_id)
+                .order("waktu_checkpoint", desc=True)
+                .limit(1)
+                .execute())
+        total = resp.count or 0
+        terakhir = resp.data[0]["waktu_checkpoint"] if resp.data else None
+        return {"total": total, "terakhir": terakhir}
+    except Exception as e:
+        return {"total": 0, "terakhir": None}
+
+def ambil_riwayat_watchlist(watchlist_id, limit=200):
+    if not SUPABASE:
+        return []
+    try:
+        resp = (SUPABASE.table("artikel_history")
+                .select("*")
+                .eq("watchlist_id", watchlist_id)
+                .order("waktu_checkpoint", desc=True)
+                .limit(limit)
+                .execute())
+        return resp.data or []
+    except Exception as e:
+        st.error(f"Gagal ambil riwayat: {e}")
+        return []
+
+# =========================================================
 # UI STREAMLIT
 # =========================================================
 st.title("📰 Scraper Berita Indonesia")
@@ -960,210 +1081,307 @@ with st.sidebar:
             else:
                 st.error(PESAN_HUBUNGI_DEVELOPER)
 
-if "hasil" not in st.session_state:
-    st.session_state.hasil = []
+tab_cari, tab_monitoring = st.tabs(["🔍 Pencarian Cepat", "📡 Monitoring"])
 
-if tombol_cari:
-    if not tema.strip():
-        st.warning("Masukkan tema berita dulu ya.")
-    elif not sumber_dipilih:
-        st.warning("Pilih minimal satu sumber berita.")
-    else:
-        status_box = st.empty()
-        progress_log = []
+with tab_cari:
+    if "hasil" not in st.session_state:
+        st.session_state.hasil = []
 
-        def progress_callback(msg):
-            progress_log.append(msg)
-            status_box.info("\n\n".join(progress_log[-5:]))
-
-        with st.spinner("Sedang mengambil data..."):
-            hasil = cari_berita_cached(
-                tema=tema,
-                sumber_dipilih=sumber_dipilih,
-                tanggal_mulai=tanggal_mulai,
-                tanggal_akhir=tanggal_akhir,
-                max_halaman=max_halaman,
-                ambil_konten=ambil_konten,
-                match_persis=match_persis,
-                _progress_callback=progress_callback,
-            )
-        status_box.empty()
-        st.session_state.hasil = hasil
-        st.session_state.klaster = deteksi_klaster_berita(hasil)
-        st.success(f"Selesai! Ditemukan {len(hasil)} artikel unik.")
-
-# =========================================================
-# TAMPILKAN HASIL
-# =========================================================
-hasil = st.session_state.hasil
-
-if hasil:
-    st.subheader(f"Hasil: {len(hasil)} artikel")
-
-    sumber_unik = sorted(set(h["sumber"] for h in hasil))
-    filter_tampil = st.multiselect("Tampilkan sumber:", sumber_unik, default=sumber_unik)
-    hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
-
-    # ---------------- ANALISIS HASIL ----------------
-    with st.expander("📊 Analisis Hasil (word cloud, kata kunci & sentimen)"):
-        wc = buat_wordcloud(hasil_tampil)
-        if wc:
-            fig, ax = plt.subplots(figsize=(10, 3.5))
-            ax.imshow(wc, interpolation="bilinear")
-            ax.axis("off")
-            st.pyplot(fig)
-            plt.close(fig)
+    if tombol_cari:
+        if not tema.strip():
+            st.warning("Masukkan tema berita dulu ya.")
+        elif not sumber_dipilih:
+            st.warning("Pilih minimal satu sumber berita.")
         else:
-            st.caption("Belum cukup teks untuk membuat word cloud.")
+            status_box = st.empty()
+            progress_log = []
 
-        col_kw, col_sent = st.columns(2)
-        with col_kw:
-            st.caption("Top 15 kata kunci")
-            top_kw = hitung_top_keywords(hasil_tampil)
-            if top_kw:
-                df_kw = pd.DataFrame(top_kw, columns=["kata", "jumlah"]).set_index("kata")
-                st.bar_chart(df_kw)
+            def progress_callback(msg):
+                progress_log.append(msg)
+                status_box.info("\n\n".join(progress_log[-5:]))
+
+            with st.spinner("Sedang mengambil data..."):
+                hasil = cari_berita_cached(
+                    tema=tema,
+                    sumber_dipilih=sumber_dipilih,
+                    tanggal_mulai=tanggal_mulai,
+                    tanggal_akhir=tanggal_akhir,
+                    max_halaman=max_halaman,
+                    ambil_konten=ambil_konten,
+                    match_persis=match_persis,
+                    _progress_callback=progress_callback,
+                )
+            status_box.empty()
+            st.session_state.hasil = hasil
+            st.session_state.klaster = deteksi_klaster_berita(hasil)
+            st.success(f"Selesai! Ditemukan {len(hasil)} artikel unik.")
+
+    # =========================================================
+    # TAMPILKAN HASIL
+    # =========================================================
+    hasil = st.session_state.hasil
+
+    if hasil:
+        st.subheader(f"Hasil: {len(hasil)} artikel")
+
+        sumber_unik = sorted(set(h["sumber"] for h in hasil))
+        filter_tampil = st.multiselect("Tampilkan sumber:", sumber_unik, default=sumber_unik)
+        hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
+
+        # ---------------- ANALISIS HASIL ----------------
+        with st.expander("📊 Analisis Hasil (word cloud, kata kunci & sentimen)"):
+            wc = buat_wordcloud(hasil_tampil)
+            if wc:
+                fig, ax = plt.subplots(figsize=(10, 3.5))
+                ax.imshow(wc, interpolation="bilinear")
+                ax.axis("off")
+                st.pyplot(fig)
+                plt.close(fig)
             else:
-                st.caption("Belum cukup teks.")
-        with col_sent:
-            st.caption("Distribusi sentimen (lexicon-based, kasar)")
-            sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
-            if sentimen_list:
-                sentimen_counts = pd.Series(sentimen_list).value_counts()
-                st.bar_chart(sentimen_counts)
-            else:
-                st.caption("Belum ada data sentimen (perlu ambil isi/ringkasan dulu).")
+                st.caption("Belum cukup teks untuk membuat word cloud.")
 
-        df_stat = buat_dataframe_statistik(hasil_tampil)
-        if not df_stat.empty:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.caption("Jumlah artikel per sumber")
-                st.bar_chart(df_stat["sumber"].value_counts())
-            with col_b:
-                st.caption("Jumlah artikel per hari")
-                per_hari = df_stat.dropna(subset=["tanggal"]).groupby("tanggal").size()
-                if not per_hari.empty:
-                    st.bar_chart(per_hari)
+            col_kw, col_sent = st.columns(2)
+            with col_kw:
+                st.caption("Top 15 kata kunci")
+                top_kw = hitung_top_keywords(hasil_tampil)
+                if top_kw:
+                    df_kw = pd.DataFrame(top_kw, columns=["kata", "jumlah"]).set_index("kata")
+                    st.bar_chart(df_kw)
                 else:
-                    st.caption("Tanggal tidak terbaca untuk sebagian besar artikel.")
-
-    # ---------------- LIPUTAN SAMA DARI BEBERAPA SUMBER ----------------
-    klaster = st.session_state.get("klaster", [])
-    klaster_tampil = [
-        k for k in klaster
-        if any(hasil[i] in hasil_tampil for i in k)
-    ]
-    if klaster_tampil:
-        with st.expander(f"🔗 Liputan Sama dari Beberapa Sumber ({len(klaster_tampil)} topik)"):
-            for idx_klaster, indeks_artikel in enumerate(klaster_tampil):
-                artikel_klaster = [hasil[i] for i in indeks_artikel]
-                sumber_terlibat = ", ".join(sorted({a["sumber"] for a in artikel_klaster}))
-                st.markdown(f"**Topik {idx_klaster + 1}** — diliput oleh: {sumber_terlibat}")
-                for a in artikel_klaster:
-                    st.markdown(f"- [{a['judul']}]({a['link']}) — *{a['sumber']}*")
-
-                if not GEMINI_API_KEY:
-                    st.caption("💡 Fitur bandingkan sudut pandang AI belum dikonfigurasi developer.")
-                elif not st.session_state.get("ai_unlocked", False):
-                    st.caption("🔒 Fitur ini terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+                    st.caption("Belum cukup teks.")
+            with col_sent:
+                st.caption("Distribusi sentimen (lexicon-based, kasar)")
+                sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+                if sentimen_list:
+                    sentimen_counts = pd.Series(sentimen_list).value_counts()
+                    st.bar_chart(sentimen_counts)
                 else:
-                    cluster_key = "_".join(str(i) for i in indeks_artikel)
-                    hasil_banding_key = f"banding_{cluster_key}"
-                    if st.session_state.get(hasil_banding_key):
-                        st.markdown("**✨ Perbandingan Sudut Pandang (AI):**")
-                        st.write(st.session_state[hasil_banding_key])
+                    st.caption("Belum ada data sentimen (perlu ambil isi/ringkasan dulu).")
+
+            df_stat = buat_dataframe_statistik(hasil_tampil)
+            if not df_stat.empty:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.caption("Jumlah artikel per sumber")
+                    st.bar_chart(df_stat["sumber"].value_counts())
+                with col_b:
+                    st.caption("Jumlah artikel per hari")
+                    per_hari = df_stat.dropna(subset=["tanggal"]).groupby("tanggal").size()
+                    if not per_hari.empty:
+                        st.bar_chart(per_hari)
                     else:
-                        if st.button("🔍 Bandingkan Sudut Pandang dengan AI", key=f"btn_banding_{cluster_key}"):
-                            with st.spinner("Membandingkan framing antar sumber dengan Gemini..."):
-                                hasil_banding, error = bandingkan_sudut_pandang_gemini(artikel_klaster, GEMINI_API_KEY)
-                            if hasil_banding:
-                                st.session_state[hasil_banding_key] = hasil_banding
+                        st.caption("Tanggal tidak terbaca untuk sebagian besar artikel.")
+
+        # ---------------- LIPUTAN SAMA DARI BEBERAPA SUMBER ----------------
+        klaster = st.session_state.get("klaster", [])
+        klaster_tampil = [
+            k for k in klaster
+            if any(hasil[i] in hasil_tampil for i in k)
+        ]
+        if klaster_tampil:
+            with st.expander(f"🔗 Liputan Sama dari Beberapa Sumber ({len(klaster_tampil)} topik)"):
+                for idx_klaster, indeks_artikel in enumerate(klaster_tampil):
+                    artikel_klaster = [hasil[i] for i in indeks_artikel]
+                    sumber_terlibat = ", ".join(sorted({a["sumber"] for a in artikel_klaster}))
+                    st.markdown(f"**Topik {idx_klaster + 1}** — diliput oleh: {sumber_terlibat}")
+                    for a in artikel_klaster:
+                        st.markdown(f"- [{a['judul']}]({a['link']}) — *{a['sumber']}*")
+
+                    if not GEMINI_API_KEY:
+                        st.caption("💡 Fitur bandingkan sudut pandang AI belum dikonfigurasi developer.")
+                    elif not st.session_state.get("ai_unlocked", False):
+                        st.caption("🔒 Fitur ini terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+                    else:
+                        cluster_key = "_".join(str(i) for i in indeks_artikel)
+                        hasil_banding_key = f"banding_{cluster_key}"
+                        if st.session_state.get(hasil_banding_key):
+                            st.markdown("**✨ Perbandingan Sudut Pandang (AI):**")
+                            st.write(st.session_state[hasil_banding_key])
+                        else:
+                            if st.button("🔍 Bandingkan Sudut Pandang dengan AI", key=f"btn_banding_{cluster_key}"):
+                                with st.spinner("Membandingkan framing antar sumber dengan Gemini..."):
+                                    hasil_banding, error = bandingkan_sudut_pandang_gemini(artikel_klaster, GEMINI_API_KEY)
+                                if hasil_banding:
+                                    st.session_state[hasil_banding_key] = hasil_banding
+                                    st.rerun()
+                                else:
+                                    st.error(f"Gagal membandingkan: {error}")
+                    st.divider()
+
+        for item in hasil_tampil:
+            tgl_str = item["tanggal"].strftime("%d %B %Y") if item.get("tanggal") else (item.get("tanggal_teks") or "Tanggal tidak diketahui")
+            with st.expander(f"📌 {item['judul']}  —  {item['sumber']} ({tgl_str})"):
+                st.markdown(f"**Link:** [{item['link']}]({item['link']})")
+                if item.get("catatan"):
+                    st.warning(item["catatan"])
+
+                if item.get("sentimen"):
+                    emoji_sentimen = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(item["sentimen"], "⚪")
+                    st.caption(f"{emoji_sentimen} Sentimen: {item['sentimen']} (perkiraan kasar, lexicon-based)")
+
+                if item.get("ringkasan"):
+                    st.markdown("**📝 Ringkasan Otomatis:**")
+                    st.write(item["ringkasan"])
+
+                konten_valid = item.get("konten") and item["konten"] not in KONTEN_INVALID
+
+                if item.get("ringkasan_ai"):
+                    st.markdown("**✨ Ringkasan AI (Gemini):**")
+                    st.write(item["ringkasan_ai"])
+                elif konten_valid:
+                    if not GEMINI_API_KEY:
+                        st.caption("💡 Fitur ringkasan AI belum dikonfigurasi developer.")
+                    elif not st.session_state.get("ai_unlocked", False):
+                        st.caption("🔒 Fitur ringkasan AI terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+                    else:
+                        if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
+                            with st.spinner("Meringkas dengan Gemini..."):
+                                hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
+                            if hasil_ai:
+                                item["ringkasan_ai"] = hasil_ai
                                 st.rerun()
                             else:
-                                st.error(f"Gagal membandingkan: {error}")
-                st.divider()
+                                st.error(f"Gagal membuat ringkasan AI: {error}")
 
-    for item in hasil_tampil:
-        tgl_str = item["tanggal"].strftime("%d %B %Y") if item.get("tanggal") else (item.get("tanggal_teks") or "Tanggal tidak diketahui")
-        with st.expander(f"📌 {item['judul']}  —  {item['sumber']} ({tgl_str})"):
-            st.markdown(f"**Link:** [{item['link']}]({item['link']})")
-            if item.get("catatan"):
-                st.warning(item["catatan"])
+                if item.get("konten"):
+                    st.markdown("**📰 Isi Lengkap:**")
+                    st.write(item["konten"])
 
-            if item.get("sentimen"):
-                emoji_sentimen = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(item["sentimen"], "⚪")
-                st.caption(f"{emoji_sentimen} Sentimen: {item['sentimen']} (perkiraan kasar, lexicon-based)")
+        # ---------------- EKSPOR ----------------
+        st.subheader("⬇️ Unduh Hasil")
 
-            if item.get("ringkasan"):
-                st.markdown("**📝 Ringkasan Otomatis:**")
-                st.write(item["ringkasan"])
+        def buat_csv(data):
+            output = io.StringIO()
+            kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal",
+                     "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "sentimen", "konten", "catatan"]
+            writer = csv.DictWriter(output, fieldnames=kolom, extrasaction="ignore")
+            writer.writeheader()
+            for item in data:
+                baris = dict(item)
+                if isinstance(baris.get("tanggal"), datetime):
+                    baris["tanggal"] = baris["tanggal"].strftime("%Y-%m-%d")
+                writer.writerow(baris)
+            return output.getvalue()
 
-            konten_valid = item.get("konten") and item["konten"] not in KONTEN_INVALID
+        def buat_json(data):
+            salinan_semua = []
+            for item in data:
+                salinan = dict(item)
+                if isinstance(salinan.get("tanggal"), datetime):
+                    salinan["tanggal"] = salinan["tanggal"].strftime("%Y-%m-%d")
+                salinan_semua.append(salinan)
+            return json.dumps(salinan_semua, ensure_ascii=False, indent=2)
 
-            if item.get("ringkasan_ai"):
-                st.markdown("**✨ Ringkasan AI (Gemini):**")
-                st.write(item["ringkasan_ai"])
-            elif konten_valid:
-                if not GEMINI_API_KEY:
-                    st.caption("💡 Fitur ringkasan AI belum dikonfigurasi developer.")
-                elif not st.session_state.get("ai_unlocked", False):
-                    st.caption("🔒 Fitur ringkasan AI terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                "Unduh sebagai CSV",
+                data=buat_csv(hasil_tampil),
+                file_name=f"berita_{tema or 'hasil'}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with col2:
+            st.download_button(
+                "Unduh sebagai JSON",
+                data=buat_json(hasil_tampil),
+                file_name=f"berita_{tema or 'hasil'}.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+    else:
+        st.info("Masukkan tema di sidebar lalu klik **Cari Berita** untuk mulai.")
+
+with tab_monitoring:
+    st.subheader("📡 Monitoring Watchlist")
+    st.caption(
+        "Track topik secara berkelanjutan. Beda dari Pencarian Cepat: hasil di sini "
+        "TERSIMPAN permanen (Supabase) dan menumpuk jadi riwayat tiap kali Anda klik Refresh, "
+        "jadi bisa dipakai buat lihat tren dari waktu ke waktu."
+    )
+
+    if not SUPABASE:
+        st.error(
+            "Supabase belum terkoneksi. Pastikan `SUPABASE_URL` dan `SUPABASE_KEY` "
+            "sudah di-set di Streamlit secrets."
+        )
+    else:
+        with st.expander("➕ Tambah Topik Baru"):
+            with st.form("form_tambah_watchlist", clear_on_submit=True):
+                nama_topik_baru = st.text_input("Nama topik", placeholder="contoh: Rupiah, Kaesang Pangarep")
+                kata_kunci_baru = st.text_input("Kata kunci pencarian", placeholder="contoh: rupiah")
+                sumber_baru = st.multiselect(
+                    "Sumber yang dipantau",
+                    options=list(SCRAPER_PER_SUMBER.keys()),
+                    default=list(SCRAPER_PER_SUMBER.keys())
+                )
+                exact_baru = st.checkbox("Cari frasa persis (exact match)", value=False, key="exact_match_watchlist")
+                submit_watchlist = st.form_submit_button("Tambah ke Watchlist", type="primary", use_container_width=True)
+
+            if submit_watchlist:
+                if not nama_topik_baru.strip() or not kata_kunci_baru.strip():
+                    st.warning("Nama topik dan kata kunci wajib diisi.")
+                elif not sumber_baru:
+                    st.warning("Pilih minimal 1 sumber.")
                 else:
-                    if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
-                        with st.spinner("Meringkas dengan Gemini..."):
-                            hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
-                        if hasil_ai:
-                            item["ringkasan_ai"] = hasil_ai
-                            st.rerun()
+                    hasil_tambah = tambah_watchlist(
+                        nama_topik_baru.strip(), kata_kunci_baru.strip(), sumber_baru, exact_baru
+                    )
+                    if hasil_tambah:
+                        st.success(f"Topik '{nama_topik_baru}' ditambahkan ke watchlist.")
+                        st.rerun()
+
+        st.divider()
+
+        daftar_watchlist = ambil_watchlist()
+
+        if not daftar_watchlist:
+            st.info("Belum ada topik yang di-track. Tambahkan lewat form di atas.")
+        else:
+            for wl in daftar_watchlist:
+                with st.container(border=True):
+                    col_info, col_refresh, col_hapus = st.columns([3, 1, 1])
+                    with col_info:
+                        st.markdown(f"**{wl['nama_topik']}**")
+                        st.caption(
+                            f"Keyword: `{wl['kata_kunci']}` · "
+                            f"Sumber: {', '.join(wl['sumber_dipilih'])}"
+                            + (" · exact match" if wl.get("exact_match") else "")
+                        )
+                        ringkasan_wl = ambil_ringkasan_watchlist(wl["id"])
+                        if ringkasan_wl["total"] > 0:
+                            terakhir_str = ringkasan_wl["terakhir"][:16].replace("T", " ") if ringkasan_wl["terakhir"] else "-"
+                            st.caption(f"📚 {ringkasan_wl['total']} artikel tersimpan · checkpoint terakhir: {terakhir_str}")
                         else:
-                            st.error(f"Gagal membuat ringkasan AI: {error}")
+                            st.caption("📚 Belum ada riwayat -- klik Refresh untuk checkpoint pertama.")
+                    with col_refresh:
+                        if st.button("🔄 Refresh", key=f"refresh_wl_{wl['id']}", use_container_width=True):
+                            with st.spinner(f"Refresh '{wl['nama_topik']}'..."):
+                                tgl_akhir_wl = datetime.now().date()
+                                tgl_mulai_wl = tgl_akhir_wl - timedelta(days=1)
+                                hasil_wl = cari_berita_cached(
+                                    tema=wl["kata_kunci"],
+                                    sumber_dipilih=wl["sumber_dipilih"],
+                                    tanggal_mulai=tgl_mulai_wl,
+                                    tanggal_akhir=tgl_akhir_wl,
+                                    max_halaman=3,
+                                    ambil_konten=True,
+                                    match_persis=wl.get("exact_match", False),
+                                    _progress_callback=None,
+                                )
+                                jumlah_baru = simpan_artikel_history(wl["id"], hasil_wl)
+                            st.success(f"{jumlah_baru} artikel baru disimpan (dari {len(hasil_wl)} ditemukan).")
+                            st.rerun()
+                    with col_hapus:
+                        if st.button("🗑️ Hapus", key=f"hapus_wl_{wl['id']}", use_container_width=True):
+                            hapus_watchlist(wl["id"])
+                            st.rerun()
 
-            if item.get("konten"):
-                st.markdown("**📰 Isi Lengkap:**")
-                st.write(item["konten"])
-
-    # ---------------- EKSPOR ----------------
-    st.subheader("⬇️ Unduh Hasil")
-
-    def buat_csv(data):
-        output = io.StringIO()
-        kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal",
-                 "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "sentimen", "konten", "catatan"]
-        writer = csv.DictWriter(output, fieldnames=kolom, extrasaction="ignore")
-        writer.writeheader()
-        for item in data:
-            baris = dict(item)
-            if isinstance(baris.get("tanggal"), datetime):
-                baris["tanggal"] = baris["tanggal"].strftime("%Y-%m-%d")
-            writer.writerow(baris)
-        return output.getvalue()
-
-    def buat_json(data):
-        salinan_semua = []
-        for item in data:
-            salinan = dict(item)
-            if isinstance(salinan.get("tanggal"), datetime):
-                salinan["tanggal"] = salinan["tanggal"].strftime("%Y-%m-%d")
-            salinan_semua.append(salinan)
-        return json.dumps(salinan_semua, ensure_ascii=False, indent=2)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            "Unduh sebagai CSV",
-            data=buat_csv(hasil_tampil),
-            file_name=f"berita_{tema or 'hasil'}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with col2:
-        st.download_button(
-            "Unduh sebagai JSON",
-            data=buat_json(hasil_tampil),
-            file_name=f"berita_{tema or 'hasil'}.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-else:
-    st.info("Masukkan tema di sidebar lalu klik **Cari Berita** untuk mulai.")
+                    with st.expander("Lihat riwayat artikel"):
+                        riwayat_wl = ambil_riwayat_watchlist(wl["id"], limit=50)
+                        if riwayat_wl:
+                            for art in riwayat_wl:
+                                emoji_sent = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(art.get("sentimen"), "⚪")
+                                st.markdown(f"{emoji_sent} [{art['judul']}]({art['link']}) — *{art['sumber']}*")
+                        else:
+                            st.caption("Belum ada riwayat tersimpan.")
