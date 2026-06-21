@@ -9,3 +9,4 @@ wordcloud
 matplotlib
 pandas
 google-generativeai
+supabase
