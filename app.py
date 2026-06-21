@@ -12,6 +12,8 @@ import csv
 import json
 import re
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 
 import networkx as nx
 import pandas as pd
@@ -318,6 +320,78 @@ def buat_dataframe_statistik(hasil_tampil):
             "tanggal": tgl.date() if isinstance(tgl, datetime) else None,
         })
     return pd.DataFrame(baris)
+
+def hitung_top_keywords(hasil_tampil, n=15):
+    """Kata yang paling sering muncul (setelah stopword removal) dari gabungan
+    judul + ringkasan semua artikel yang tampil. Pelengkap word cloud yang lebih
+    presisi/terbaca (angka pasti, bukan cuma ukuran visual)."""
+    teks_gabungan = " ".join(
+        f"{item.get('judul', '')} {item.get('ringkasan_redaksi') or item.get('ringkasan') or ''}"
+        for item in hasil_tampil
+    ).lower()
+    if not teks_gabungan.strip():
+        return []
+    stopwords_id = set(StopWordRemoverFactory().get_stop_words()) | _STOPWORDS_TAMBAHAN
+    kata_list = re.findall(r"[a-zà-öø-ÿ]{3,}", teks_gabungan)
+    kata_list = [k for k in kata_list if k not in stopwords_id]
+    return Counter(kata_list).most_common(n)
+
+# =========================================================
+# SENTIMENT TAGGING -- LEXICON-BASED SEDERHANA
+# Bukan machine learning, cuma hitung selisih kata positif vs negatif dari
+# daftar kata yang dikurasi manual. Gratis, instan, tanpa API -- tapi akurasinya
+# terbatas (gak paham konteks/sarkasme/negasi). Cocok buat gambaran kasar arah
+# pemberitaan, bukan analisis presisi.
+# =========================================================
+_KATA_POSITIF = {
+    "untung", "menguat", "naik", "tumbuh", "sukses", "berhasil", "bagus", "baik",
+    "positif", "meningkat", "maju", "unggul", "menang", "juara", "prestasi",
+    "apresiasi", "dukungan", "optimis", "stabil", "pulih", "membaik", "lonjak",
+    "rekor", "capaian", "inovasi", "terobosan", "kemajuan", "kemenangan",
+    "keuntungan", "laba", "surplus", "bangkit", "solid", "kuat", "berkembang",
+    "memuaskan", "gemilang", "cemerlang", "harmonis", "damai",
+    "sepakat", "rukun", "akur", "lancar", "aman", "kondusif", "efektif",
+    "efisien", "produktif", "berkah", "manfaat", "subur", "makmur", "sejahtera",
+}
+_KATA_NEGATIF = {
+    "turun", "melemah", "anjlok", "rugi", "gagal", "buruk", "negatif", "krisis",
+    "korupsi", "bencana", "kecelakaan", "kebakaran", "banjir", "longsor",
+    "pembunuhan", "kematian", "tewas", "meninggal", "kerusuhan", "konflik",
+    "perang", "serangan", "teror", "kekerasan", "kejahatan", "pencurian",
+    "penipuan", "pelanggaran", "skandal", "kontroversi", "protes", "demo",
+    "tuntutan", "kecaman", "kritik", "ancaman", "bahaya", "darurat", "waspada",
+    "khawatir", "cemas", "takut", "marah", "kecewa", "sedih", "duka",
+    "tertekan", "terpuruk", "ambruk", "hancur", "rusak", "defisit",
+    "pemecatan", "resesi", "utang", "kebangkrutan",
+    "tersangka", "terdakwa", "dipenjara", "ditangkap", "diciduk", "disidang",
+}
+
+def analisis_sentimen(teks):
+    """Return (label, skor). Label salah satu dari 'Positif'/'Negatif'/'Netral'."""
+    if not teks:
+        return "Netral", 0
+    kata_list = re.findall(r"[a-z]+", teks.lower())
+    skor_pos = sum(1 for k in kata_list if k in _KATA_POSITIF)
+    skor_neg = sum(1 for k in kata_list if k in _KATA_NEGATIF)
+    skor = skor_pos - skor_neg
+    if skor > 0:
+        return "Positif", skor
+    elif skor < 0:
+        return "Negatif", skor
+    return "Netral", skor
+
+def cocok_frasa_persis(teks, frasa):
+    """Match frasa persis pakai regex word-boundary, bukan substring polos.
+    Lebih presisi: normalisasi spasi berlebih, dan gak ke-trigger kalau frasa
+    nempel di tengah kata lain (mis. 'esport' gak nyangkut di 'megaesport')."""
+    if not teks or not frasa:
+        return False
+    teks_norm = re.sub(r"\s+", " ", teks).lower()
+    frasa_norm = re.sub(r"\s+", " ", frasa).lower().strip()
+    if not frasa_norm:
+        return False
+    pola = r"\b" + re.escape(frasa_norm) + r"\b"
+    return re.search(pola, teks_norm) is not None
 
 # =========================================================
 # SCRAPER PER SUMBER
@@ -698,24 +772,57 @@ def scrape_isi_artikel(url, progress_callback=None):
 # =========================================================
 # FUNGSI UTAMA PENCARIAN
 # =========================================================
+def _scrape_satu_sumber(nama_sumber, tema, max_halaman, tanggal_mulai, tanggal_akhir):
+    """
+    Helper buat dipanggil paralel oleh ThreadPoolExecutor.
+    PENTING: progress_callback di sini LOKAL (cuma append ke list), TIDAK langsung
+    menyentuh Streamlit. Streamlit gak thread-safe kalau widget di-update dari
+    banyak thread sekaligus -- log dikumpulkan dulu di thread worker, baru
+    di-flush ke UI asli dari main thread setelah future-nya selesai (lihat
+    cari_berita di bawah).
+    """
+    fungsi = SCRAPER_PER_SUMBER[nama_sumber]
+    local_log = []
+
+    def _local_callback(msg):
+        local_log.append(msg)
+
+    try:
+        if nama_sumber in SUMBER_DENGAN_FILTER_TANGGAL_NATIVE:
+            hasil = fungsi(
+                tema, max_halaman=max_halaman,
+                tanggal_mulai=tanggal_mulai, tanggal_akhir=tanggal_akhir,
+                progress_callback=_local_callback
+            )
+        else:
+            hasil = fungsi(tema, max_halaman=max_halaman, progress_callback=_local_callback)
+        return nama_sumber, hasil, local_log, None
+    except Exception as e:
+        return nama_sumber, [], local_log, str(e)
+
 def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis=False, progress_callback=None):
     semua_hasil = []
-    for nama_sumber in sumber_dipilih:
-        fungsi = SCRAPER_PER_SUMBER[nama_sumber]
-        if progress_callback:
-            progress_callback(f"Mengambil dari {nama_sumber}...")
-        try:
-            if nama_sumber in SUMBER_DENGAN_FILTER_TANGGAL_NATIVE:
-                semua_hasil.extend(fungsi(
-                    tema, max_halaman=max_halaman,
-                    tanggal_mulai=tanggal_mulai, tanggal_akhir=tanggal_akhir,
-                    progress_callback=progress_callback
-                ))
-            else:
-                semua_hasil.extend(fungsi(tema, max_halaman=max_halaman, progress_callback=progress_callback))
-        except Exception as e:
+
+    # Scraping paralel per sumber (I/O-bound, jadi thread cocok dan jauh lebih
+    # cepat daripada loop sekuensial). Log dari tiap thread di-flush ke UI
+    # SETELAH future selesai, dari main thread -- ini yang bikin aman dipakai
+    # bareng Streamlit.
+    max_workers = max(1, min(len(sumber_dipilih), 6))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_scrape_satu_sumber, nama_sumber, tema, max_halaman, tanggal_mulai, tanggal_akhir): nama_sumber
+            for nama_sumber in sumber_dipilih
+        }
+        for future in as_completed(futures):
+            nama_sumber, hasil, local_log, error = future.result()
+            semua_hasil.extend(hasil)
             if progress_callback:
-                progress_callback(f"[ERROR] {nama_sumber}: {e}")
+                for msg in local_log:
+                    progress_callback(f"[{nama_sumber}] {msg}")
+                if error:
+                    progress_callback(f"[ERROR] {nama_sumber}: {error}")
+                else:
+                    progress_callback(f"✅ {nama_sumber}: {len(hasil)} artikel ditemukan")
 
     sudah_dilihat = set()
     hasil_unik = []
@@ -729,10 +836,9 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
     # & summarization). Dicek terhadap judul + ringkasan redaksi (kalau ada),
     # karena keduanya sudah tersedia dari hasil listing tanpa request tambahan.
     if match_persis and tema.strip():
-        frasa = tema.strip().lower()
         hasil_unik = [
             item for item in hasil_unik
-            if frasa in f"{item.get('judul', '')} {item.get('ringkasan_redaksi') or ''}".lower()
+            if cocok_frasa_persis(f"{item.get('judul', '')} {item.get('ringkasan_redaksi') or ''}", tema)
         ]
 
     dt_mulai = datetime.combine(tanggal_mulai, datetime.min.time()) if tanggal_mulai else None
@@ -767,7 +873,31 @@ def cari_berita(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman,
                     progress_callback(f"Meringkas [{i}/{total}]: {item['judul'][:60]}...")
                 item["ringkasan"] = ringkas_ekstraktif(konten)
 
+    # Sentiment tagging -- selalu jalan (gratis, instan), pakai teks terbaik yang
+    # tersedia: isi lengkap kalau ada, kalau enggak fallback ke ringkasan redaksi/judul.
+    for item in hasil_final:
+        teks_sentimen = item.get("konten") or item.get("ringkasan_redaksi") or item.get("judul") or ""
+        if teks_sentimen and teks_sentimen not in KONTEN_INVALID:
+            label, skor = analisis_sentimen(teks_sentimen)
+            item["sentimen"] = label
+            item["sentimen_skor"] = skor
+
     return hasil_final
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cari_berita_cached(tema, sumber_dipilih, tanggal_mulai, tanggal_akhir, max_halaman, ambil_konten, match_persis, _progress_callback=None):
+    """
+    Wrapper cache (TTL 15 menit) di atas cari_berita. Parameter diawali underscore
+    (_progress_callback) dikecualikan Streamlit dari cache key -- soalnya fungsi
+    gak bisa di-hash, dan emang gak relevan buat nentuin apakah hasilnya sama.
+    Cache hit = gak ada scraping ulang sama sekali, jadi progress_callback gak
+    akan kepanggil; itu sudah benar (gak ada progress buat dilaporkan).
+    """
+    return cari_berita(
+        tema, sumber_dipilih, tanggal_mulai, tanggal_akhir,
+        max_halaman, ambil_konten, match_persis,
+        progress_callback=_progress_callback
+    )
 
 # =========================================================
 # UI STREAMLIT
@@ -847,7 +977,7 @@ if tombol_cari:
             status_box.info("\n\n".join(progress_log[-5:]))
 
         with st.spinner("Sedang mengambil data..."):
-            hasil = cari_berita(
+            hasil = cari_berita_cached(
                 tema=tema,
                 sumber_dipilih=sumber_dipilih,
                 tanggal_mulai=tanggal_mulai,
@@ -855,7 +985,7 @@ if tombol_cari:
                 max_halaman=max_halaman,
                 ambil_konten=ambil_konten,
                 match_persis=match_persis,
-                progress_callback=progress_callback,
+                _progress_callback=progress_callback,
             )
         status_box.empty()
         st.session_state.hasil = hasil
@@ -875,7 +1005,7 @@ if hasil:
     hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
 
     # ---------------- ANALISIS HASIL ----------------
-    with st.expander("📊 Analisis Hasil (word cloud & statistik)"):
+    with st.expander("📊 Analisis Hasil (word cloud, kata kunci & sentimen)"):
         wc = buat_wordcloud(hasil_tampil)
         if wc:
             fig, ax = plt.subplots(figsize=(10, 3.5))
@@ -885,6 +1015,24 @@ if hasil:
             plt.close(fig)
         else:
             st.caption("Belum cukup teks untuk membuat word cloud.")
+
+        col_kw, col_sent = st.columns(2)
+        with col_kw:
+            st.caption("Top 15 kata kunci")
+            top_kw = hitung_top_keywords(hasil_tampil)
+            if top_kw:
+                df_kw = pd.DataFrame(top_kw, columns=["kata", "jumlah"]).set_index("kata")
+                st.bar_chart(df_kw)
+            else:
+                st.caption("Belum cukup teks.")
+        with col_sent:
+            st.caption("Distribusi sentimen (lexicon-based, kasar)")
+            sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+            if sentimen_list:
+                sentimen_counts = pd.Series(sentimen_list).value_counts()
+                st.bar_chart(sentimen_counts)
+            else:
+                st.caption("Belum ada data sentimen (perlu ambil isi/ringkasan dulu).")
 
         df_stat = buat_dataframe_statistik(hasil_tampil)
         if not df_stat.empty:
@@ -943,6 +1091,10 @@ if hasil:
             if item.get("catatan"):
                 st.warning(item["catatan"])
 
+            if item.get("sentimen"):
+                emoji_sentimen = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(item["sentimen"], "⚪")
+                st.caption(f"{emoji_sentimen} Sentimen: {item['sentimen']} (perkiraan kasar, lexicon-based)")
+
             if item.get("ringkasan"):
                 st.markdown("**📝 Ringkasan Otomatis:**")
                 st.write(item["ringkasan"])
@@ -977,7 +1129,7 @@ if hasil:
     def buat_csv(data):
         output = io.StringIO()
         kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal",
-                 "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "konten", "catatan"]
+                 "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "sentimen", "konten", "catatan"]
         writer = csv.DictWriter(output, fieldnames=kolom, extrasaction="ignore")
         writer.writeheader()
         for item in data:
