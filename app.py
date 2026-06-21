@@ -12,6 +12,7 @@ import csv
 import json
 import re
 import io
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 import xml.etree.ElementTree as ET
@@ -573,6 +574,122 @@ def buat_leaderboard_tokoh(hasil_tampil, daftar_tokoh):
         entri["skor_rata"] = round(entri["skor_total"] / entri["jumlah"], 2) if entri["jumlah"] else 0
     hasil.sort(key=lambda x: x["jumlah"], reverse=True)
     return hasil
+
+# =========================================================
+# METRIK FASE 2 -- gaya agensi PR/media intelligence
+# =========================================================
+
+def hitung_nss(hasil_tampil):
+    """Net Sentiment Score: (%Positif - %Negatif), rentang -100..+100."""
+    sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+    total = len(sentimen_list)
+    if total == 0:
+        return 0.0
+    pos = sum(1 for s in sentimen_list if s == "Positif")
+    neg = sum(1 for s in sentimen_list if s == "Negatif")
+    return round(((pos - neg) / total) * 100, 1)
+
+def hitung_skor_diversitas_sumber(hasil_tampil):
+    """
+    Skor diversitas sumber (0-1) pakai normalized Shannon entropy.
+    1.0 = artikel tersebar merata di semua sumber yang berkontribusi.
+    Mendekati 0 = liputan terpusat di 1-2 sumber doang.
+    """
+    sumber_list = [item.get("sumber") for item in hasil_tampil if item.get("sumber")]
+    if not sumber_list:
+        return 0.0
+    counts = Counter(sumber_list)
+    total = len(sumber_list)
+    n_sumber = len(counts)
+    if n_sumber <= 1:
+        return 0.0
+    entropy = -sum((c / total) * math.log(c / total) for c in counts.values())
+    entropy_maks = math.log(n_sumber)
+    return round(entropy / entropy_maks, 2)
+
+def hitung_skor_prominence(item, tema):
+    """
+    Skor 0-100 per artikel: makin tinggi makin menonjol posisi kata kunci.
+    Judul=100, lead/300 karakter pertama=60, sisa isi=20, gak ketemu=0.
+    """
+    if not tema or not tema.strip():
+        return 0
+    tema_lower = tema.lower().strip()
+    judul = (item.get("judul") or "").lower()
+    konten = (item.get("konten") or item.get("ringkasan_redaksi") or "").lower()
+    if tema_lower in judul:
+        return 100
+    if tema_lower in konten[:300]:
+        return 60
+    if tema_lower in konten:
+        return 20
+    return 0
+
+def hitung_skor_prominence_agregat(hasil_tampil, tema):
+    skor_list = [hitung_skor_prominence(item, tema) for item in hasil_tampil]
+    return round(sum(skor_list) / len(skor_list), 1) if skor_list else 0
+
+def parse_pilar_pesan(teks_input):
+    """Parse input format 'Nama Pilar: kw1, kw2, ...' (1 baris per pilar)."""
+    daftar = []
+    for baris in (teks_input or "").strip().split("\n"):
+        if ":" not in baris:
+            continue
+        nama, kw_str = baris.split(":", 1)
+        keywords = [k.strip().lower() for k in kw_str.split(",") if k.strip()]
+        if nama.strip() and keywords:
+            daftar.append({"nama_pilar": nama.strip(), "keywords": keywords})
+    return daftar
+
+def cek_resonansi_pilar(item, pilar):
+    """True kalau artikel mengandung minimal 1 keyword dari pilar (OR logic)."""
+    teks = f"{item.get('judul', '')} {item.get('konten') or item.get('ringkasan_redaksi') or ''}".lower()
+    return any(kw in teks for kw in pilar["keywords"])
+
+def hitung_resonansi_semua_pilar(hasil_tampil, daftar_pilar):
+    hasil = []
+    total = len(hasil_tampil)
+    for pilar in daftar_pilar:
+        jumlah = sum(1 for item in hasil_tampil if cek_resonansi_pilar(item, pilar))
+        persentase = round((jumlah / total) * 100, 1) if total else 0
+        hasil.append({"nama_pilar": pilar["nama_pilar"], "jumlah_artikel": jumlah, "persentase": persentase})
+    return hasil
+
+DEFAULT_BOBOT_TIER = {
+    "CNBC Indonesia": 3, "CNN Indonesia": 3, "Detik": 3, "Kompas": 3,
+    "Republika": 2, "Liputan6": 2, "Kumparan": 2,
+}
+
+def hitung_media_impact_score(hasil_tampil, bobot_tier):
+    """Media Impact Score = jumlah artikel x bobot tier sumbernya."""
+    counts = Counter(item.get("sumber") for item in hasil_tampil if item.get("sumber"))
+    return [
+        {"sumber": s, "jumlah_artikel": j, "bobot": bobot_tier.get(s, 1), "skor_impact": j * bobot_tier.get(s, 1)}
+        for s, j in counts.items()
+    ]
+
+DEFAULT_TARIF_PER_KATA = {
+    "CNBC Indonesia": 500, "CNN Indonesia": 500, "Detik": 500, "Kompas": 500,
+    "Republika": 300, "Liputan6": 300, "Kumparan": 300,
+}
+_PENGALI_SENTIMEN_PR = {"Positif": 1.5, "Netral": 0.5, "Negatif": 0.0}
+
+def hitung_pr_value(item, tarif_per_kata):
+    """
+    PR Value/AVE -- estimasi nilai publisitas setara nilai iklan (IDR).
+    PENTING: tarif per kata itu ASUMSI/fiktif yang ditentukan user, bukan data
+    resmi. AVE sendiri kontroversial secara akademis (AMEC menentang
+    penggunaannya), tapi masih sering diminta industri di Indonesia -- makanya
+    selalu tampilkan dengan disclaimer jelas, jangan seolah angka pasti.
+    """
+    konten = item.get("konten") or item.get("ringkasan_redaksi") or ""
+    jumlah_kata = len(konten.split())
+    tarif = tarif_per_kata.get(item.get("sumber"), 300)
+    pengali = _PENGALI_SENTIMEN_PR.get(item.get("sentimen"), 0.5)
+    return round(jumlah_kata * tarif * pengali)
+
+def hitung_total_pr_value(hasil_tampil, tarif_per_kata):
+    return sum(hitung_pr_value(item, tarif_per_kata) for item in hasil_tampil)
 
 # =========================================================
 # SCRAPER PER SUMBER
@@ -1542,6 +1659,18 @@ with tab_cari:
                 )
 
         with sub_dashboard:
+            nss = hitung_nss(hasil_tampil)
+            diversitas = hitung_skor_diversitas_sumber(hasil_tampil)
+            sentimen_list_sc = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+            sentimen_dominan = Counter(sentimen_list_sc).most_common(1)[0][0] if sentimen_list_sc else "-"
+
+            col_sc1, col_sc2, col_sc3, col_sc4 = st.columns(4)
+            col_sc1.metric("Total Artikel", len(hasil_tampil))
+            col_sc2.metric("Net Sentiment Score", nss, help="(%Positif − %Negatif). Rentang -100 s/d +100.")
+            col_sc3.metric("Skor Diversitas Sumber", diversitas, help="0-1. Mendekati 1 = liputan tersebar merata antar sumber, bukan terpusat di 1-2 sumber.")
+            col_sc4.metric("Sentimen Dominan", sentimen_dominan)
+            st.divider()
+
             with st.expander("🎭 Daftar Tokoh yang Dipantau"):
                 st.text_area(
                     "1 tokoh per baris. Alias boleh dipisah koma supaya sebutan informal/parsial "
@@ -1612,6 +1741,72 @@ with tab_cari:
                         st.write(f"{emoji_tokoh} **{entri['nama']}** — {entri['jumlah']}x disebut · sentimen rata-rata: {entri['skor_rata']}")
                 else:
                     st.caption("Belum ada tokoh dari daftar Anda yang ke-deteksi di hasil ini.")
+
+            st.divider()
+            with st.expander("🎯 Metrik Lanjutan (Prominence, Narrative Resonance, Media Tiering, PR Value)"):
+                st.markdown("**📍 Prominence & Salience Score**")
+                st.caption("Seberapa menonjol posisi kata kunci pencarian di dalam artikel (judul > paragraf awal > isi).")
+                skor_prom = hitung_skor_prominence_agregat(hasil_tampil, tema)
+                st.metric("Skor prominence rata-rata", f"{skor_prom} / 100")
+                st.divider()
+
+                st.markdown("**🎙️ Narrative/Message Resonance**")
+                st.caption(
+                    "Definisikan pilar pesan Anda, 1 baris per pilar, format `Nama Pilar: kata1, kata2, kata3`. "
+                    "Artikel dianggap 'beresonansi' kalau mengandung minimal 1 kata kunci pilar itu."
+                )
+                st.text_area(
+                    "Pilar pesan",
+                    placeholder="Inklusivitas Keuangan: inklusi, akses keuangan, UMKM\nEdukasi Finansial: edukasi, literasi, pelatihan",
+                    height=80,
+                    key="input_pilar_pesan",
+                )
+                daftar_pilar = parse_pilar_pesan(st.session_state.get("input_pilar_pesan", ""))
+                if daftar_pilar:
+                    resonansi = hitung_resonansi_semua_pilar(hasil_tampil, daftar_pilar)
+                    for r in resonansi:
+                        st.write(f"**{r['nama_pilar']}**: {r['jumlah_artikel']} artikel ({r['persentase']}%)")
+                else:
+                    st.caption("Belum ada pilar yang didefinisikan.")
+                st.divider()
+
+                st.markdown("**🏆 Media Tiering & Weighted Reach**")
+                st.caption("Bobot tier per sumber bisa Anda sesuaikan sendiri sesuai strategi/penilaian Anda.")
+                if "bobot_tier" not in st.session_state:
+                    st.session_state.bobot_tier = dict(DEFAULT_BOBOT_TIER)
+                sumber_di_hasil = sorted(set(h["sumber"] for h in hasil_tampil))
+                cols_tier = st.columns(min(len(sumber_di_hasil), 4) or 1)
+                for i, s in enumerate(sumber_di_hasil):
+                    with cols_tier[i % len(cols_tier)]:
+                        st.session_state.bobot_tier[s] = st.number_input(
+                            s, min_value=1, max_value=10,
+                            value=st.session_state.bobot_tier.get(s, 1),
+                            key=f"bobot_tier_{s}",
+                        )
+                impact_scores = hitung_media_impact_score(hasil_tampil, st.session_state.bobot_tier)
+                for entri in sorted(impact_scores, key=lambda x: x["skor_impact"], reverse=True):
+                    st.write(f"**{entri['sumber']}**: {entri['jumlah_artikel']} artikel × bobot {entri['bobot']} = skor impact **{entri['skor_impact']}**")
+                st.divider()
+
+                st.markdown("**💰 PR Value / Ad-Equivalency (AVE)**")
+                st.warning(
+                    "⚠️ AVE adalah estimasi berbasis ASUMSI tarif yang Anda tentukan sendiri di bawah, "
+                    "bukan data resmi/objektif. Metodologi ini juga kontroversial secara akademis "
+                    "(AMEC menentang penggunaannya sebagai metrik PR) -- tetap sering diminta industri "
+                    "Indonesia, jadi disediakan, tapi gunakan dengan kesadaran keterbatasannya."
+                )
+                if "tarif_per_kata" not in st.session_state:
+                    st.session_state.tarif_per_kata = dict(DEFAULT_TARIF_PER_KATA)
+                cols_tarif = st.columns(min(len(sumber_di_hasil), 4) or 1)
+                for i, s in enumerate(sumber_di_hasil):
+                    with cols_tarif[i % len(cols_tarif)]:
+                        st.session_state.tarif_per_kata[s] = st.number_input(
+                            f"{s} (Rp/kata)", min_value=0, max_value=10000,
+                            value=st.session_state.tarif_per_kata.get(s, 300),
+                            step=50, key=f"tarif_{s}",
+                        )
+                total_pr_value = hitung_total_pr_value(hasil_tampil, st.session_state.tarif_per_kata)
+                st.metric("Estimasi total PR Value", f"Rp {total_pr_value:,.0f}".replace(",", "."))
 
             klaster = st.session_state.get("klaster", [])
             klaster_tampil = [
