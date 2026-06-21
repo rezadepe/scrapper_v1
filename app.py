@@ -14,6 +14,7 @@ import re
 import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
+import xml.etree.ElementTree as ET
 
 import networkx as nx
 import pandas as pd
@@ -720,7 +721,11 @@ def scrape_liputan6(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None,
             tanggal_obj = None
             if time_tag and time_tag.get("datetime"):
                 try:
-                    tanggal_obj = datetime.fromisoformat(time_tag["datetime"])
+                    # .replace(tzinfo=None) WAJIB: fromisoformat() balikin datetime
+                    # timezone-aware (ada offset +07:00), sementara dt_mulai/dt_akhir
+                    # di cari_berita() naive. Banding aware vs naive -> TypeError,
+                    # bikin SELURUH pencarian crash (bukan cuma sumber ini doang).
+                    tanggal_obj = datetime.fromisoformat(time_tag["datetime"]).replace(tzinfo=None)
                 except ValueError:
                     tanggal_obj = parse_tanggal(tanggal_teks)
 
@@ -742,6 +747,112 @@ def scrape_liputan6(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None,
 
     return hasil
 
+# =========================================================
+# KUMPARAN -- via Google News Sitemap (bukan search page)
+# Kumparan gak punya UI date filter & gak bisa di-search server-side seperti
+# 6 sumber lain. Solusinya: baca sitemap berita resmi mereka (terdaftar di
+# robots.txt), yang formatnya News Sitemap standar Google -- sudah include
+# judul + tanggal presisi + keywords per artikel TANPA perlu fetch halaman
+# detail satu-satu. Konsekuensi: sitemap ini cuma nyimpen ~48 jam terakhir
+# (standar News Sitemap), jadi cocok buat recent/monitoring, kurang cocok
+# buat pencarian historis jauh ke belakang.
+# =========================================================
+KUMPARAN_SITEMAP_CHANNELS = [
+    "https://kumparan.com/sitemap_channel_news.xml",
+    "https://kumparan.com/sitemap_channel_bisnis.xml",
+    "https://kumparan.com/sitemap_channel_tekno-sains.xml",
+    "https://kumparan.com/sitemap_channel_entertainment.xml",
+    "https://kumparan.com/sitemap_channel_otomotif.xml",
+    "https://kumparan.com/sitemap_channel_woman.xml",
+    "https://kumparan.com/sitemap_channel_mom.xml",
+    "https://kumparan.com/sitemap_channel_food-travel.xml",
+    "https://kumparan.com/sitemap_channel_bola-sports.xml",
+    "https://kumparan.com/sitemap_channel_bolanita.xml",
+]
+
+_NS_SITEMAP = {
+    "sm": "http://www.sitemaps.org/schemas/sitemap/0.9",
+    "news": "http://www.google.com/schemas/sitemap-news/0.9",
+}
+
+def _ambil_satu_sitemap_kumparan(url_sitemap, progress_callback=None):
+    """Fetch + parse 1 file sitemap channel. Return SEMUA artikel di dalamnya
+    (belum difilter keyword -- itu kerjaan scrape_kumparan)."""
+    raw = ambil_halaman(url_sitemap, progress_callback=progress_callback)
+    if not raw:
+        return []
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        if progress_callback:
+            progress_callback(f"⚠️ Kumparan: XML gak valid -- {url_sitemap.split('/')[-1]}")
+        return []
+
+    artikel = []
+    for url_elem in root.findall("sm:url", _NS_SITEMAP):
+        loc_elem = url_elem.find("sm:loc", _NS_SITEMAP)
+        news_elem = url_elem.find("news:news", _NS_SITEMAP)
+        if loc_elem is None or news_elem is None or loc_elem.text is None:
+            continue
+        link = loc_elem.text.strip()
+
+        judul_elem = news_elem.find("news:title", _NS_SITEMAP)
+        tgl_elem = news_elem.find("news:publication_date", _NS_SITEMAP)
+        kw_elem = news_elem.find("news:keywords", _NS_SITEMAP)
+
+        judul = judul_elem.text.strip() if judul_elem is not None and judul_elem.text else ""
+        tgl_teks = tgl_elem.text.strip() if tgl_elem is not None and tgl_elem.text else ""
+        keywords = kw_elem.text.strip() if kw_elem is not None and kw_elem.text else ""
+
+        tanggal_obj = None
+        if tgl_teks:
+            try:
+                # .replace(tzinfo=None) WAJIB -- konsisten sama seluruh sumber
+                # lain yang pakai naive datetime (lihat bugfix Liputan6 di atas).
+                tanggal_obj = dateparser.parse(tgl_teks).replace(tzinfo=None)
+            except (ValueError, OverflowError, AttributeError):
+                tanggal_obj = None
+
+        if judul and link:
+            artikel.append({
+                "judul": judul, "link": link,
+                "tanggal_teks": tgl_teks, "tanggal": tanggal_obj,
+                "keywords": keywords,
+            })
+    return artikel
+
+def scrape_kumparan(tema, max_halaman=3, progress_callback=None):
+    """
+    Gak ada parameter query di sitemap, jadi filter keyword dilakukan DI SINI
+    (bukan server-side) -- cocok kalau tema muncul di judul ATAU keywords.
+    Semua channel di-fetch paralel (mirip pola paralel di cari_berita) karena
+    ada 10 file sitemap terpisah yang perlu diambil.
+    """
+    semua_artikel = []
+    with ThreadPoolExecutor(max_workers=min(len(KUMPARAN_SITEMAP_CHANNELS), 6)) as executor:
+        futures = [
+            executor.submit(_ambil_satu_sitemap_kumparan, url, progress_callback)
+            for url in KUMPARAN_SITEMAP_CHANNELS
+        ]
+        for future in as_completed(futures):
+            semua_artikel.extend(future.result())
+
+    tema_lower = tema.lower().strip()
+    hasil = []
+    for art in semua_artikel:
+        gabungan = f"{art['judul']} {art['keywords']}".lower()
+        if tema_lower in gabungan:
+            hasil.append({
+                "sumber": "Kumparan",
+                "judul": art["judul"],
+                "link": art["link"],
+                "ringkasan_redaksi": art["keywords"],
+                "tanggal_teks": art["tanggal_teks"],
+                "tanggal": art["tanggal"],
+                "konten": None,
+            })
+    return hasil
+
 SCRAPER_PER_SUMBER = {
     "CNBC Indonesia": scrape_cnbcindonesia,
     "CNN Indonesia": scrape_cnnindonesia,
@@ -749,6 +860,7 @@ SCRAPER_PER_SUMBER = {
     "Kompas": scrape_kompas,
     "Republika": scrape_republika,
     "Liputan6": scrape_liputan6,
+    "Kumparan": scrape_kumparan,
 }
 SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6", "CNBC Indonesia"}
 
@@ -761,6 +873,10 @@ SELECTOR_KONTEN = {
     "kompas.com": ("div", {"class_": "read__content"}),
     "republika.co.id": ("div", {"class_": "article-content"}),  # best-effort dari CSS halaman search, tolong dicek
     "liputan6.com": ("div", {"class_": "article-content-body"}),  # ditemukan dari JS brand-safety checker di halaman search
+    # kumparan.com pakai data-qa-id (bukan class CSS) -- terverifikasi dari page
+    # source artikel asli. Lebih stabil drpada class CSS auto-generated
+    # styled-components (mis. "c275a64364") yang berubah tiap mereka deploy ulang.
+    "kumparan.com": ("main", {"attrs": {"data-qa-id": "article-main"}}),
 }
 
 def scrape_isi_artikel(url, progress_callback=None):
