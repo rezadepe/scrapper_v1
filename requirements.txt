@@ -10,3 +10,4 @@ matplotlib
 pandas
 google-generativeai
 supabase
+plotly
