@@ -23,6 +23,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+import plotly.express as px
 from supabase import create_client
 
 # =========================================================
@@ -350,6 +351,93 @@ def hitung_top_keywords(hasil_tampil, n=15):
     return Counter(kata_list).most_common(n)
 
 # =========================================================
+# CHART BUILDER -- Plotly (migrasi dari st.bar_chart/Altair)
+# PENTING: axis tanggal SELALU dipaksa kategorikal (type="category") pakai
+# label string ("21 Jun"), BUKAN datetime kontinu. Altair/st.bar_chart auto
+# nampilin tick per-jam kalau rentang tanggalnya pendek -- ini fix-nya.
+# Urutan kategori tanggal dihitung dari tanggal asli (kronologis), BUKAN
+# alfabetis stringnya (soalnya "01 Jul" < "30 Jun" secara alfabet, salah).
+# =========================================================
+_WARNA_SENTIMEN = {"Positif": "#1D9E75", "Negatif": "#D85A30", "Netral": "#888780"}
+
+def _layout_chart_ringkas(fig, tinggi=280):
+    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=tinggi)
+    return fig
+
+def buat_chart_per_sumber(df_stat):
+    if df_stat.empty:
+        return None
+    counts = df_stat["sumber"].value_counts().reset_index()
+    counts.columns = ["sumber", "jumlah"]
+    fig = px.bar(counts, x="sumber", y="jumlah")
+    fig.update_xaxes(type="category", title=None)
+    fig.update_yaxes(title=None)
+    fig.update_traces(marker_color="#378ADD")
+    return _layout_chart_ringkas(fig)
+
+def buat_chart_per_hari(df_stat):
+    df = df_stat.dropna(subset=["tanggal"]).copy()
+    if df.empty:
+        return None
+    df["tanggal_str"] = df["tanggal"].apply(lambda d: d.strftime("%d %b"))
+    urutan = df.groupby("tanggal_str")["tanggal"].min().sort_values().index.tolist()
+    counts = df.groupby("tanggal_str").size().reset_index(name="jumlah")
+    fig = px.bar(counts, x="tanggal_str", y="jumlah", category_orders={"tanggal_str": urutan})
+    fig.update_xaxes(type="category", title=None)
+    fig.update_yaxes(title=None)
+    fig.update_traces(marker_color="#378ADD")
+    return _layout_chart_ringkas(fig)
+
+def buat_chart_volume_sentimen_harian(hasil_tampil):
+    """Stacked bar: volume artikel per hari, breakdown sentimen sebagai series."""
+    baris = []
+    for item in hasil_tampil:
+        tgl = item.get("tanggal")
+        if isinstance(tgl, datetime) and item.get("sentimen"):
+            baris.append({"tanggal": tgl.date(), "sentimen": item["sentimen"]})
+    if not baris:
+        return None
+    df = pd.DataFrame(baris)
+    df["tanggal_str"] = df["tanggal"].apply(lambda d: d.strftime("%d %b"))
+    urutan = df.groupby("tanggal_str")["tanggal"].min().sort_values().index.tolist()
+    agg = df.groupby(["tanggal_str", "sentimen"]).size().reset_index(name="jumlah")
+    fig = px.bar(
+        agg, x="tanggal_str", y="jumlah", color="sentimen",
+        category_orders={"tanggal_str": urutan, "sentimen": ["Positif", "Netral", "Negatif"]},
+        color_discrete_map=_WARNA_SENTIMEN,
+    )
+    fig.update_xaxes(type="category", title=None)
+    fig.update_yaxes(title=None)
+    fig.update_layout(legend_title=None)
+    return _layout_chart_ringkas(fig, tinggi=300)
+
+def buat_chart_top_keywords(top_kw):
+    if not top_kw:
+        return None
+    df_kw = pd.DataFrame(top_kw, columns=["kata", "jumlah"])
+    fig = px.bar(df_kw, x="jumlah", y="kata", orientation="h")
+    fig.update_yaxes(autorange="reversed", title=None)
+    fig.update_xaxes(title=None)
+    fig.update_traces(marker_color="#378ADD")
+    return _layout_chart_ringkas(fig, tinggi=340)
+
+def buat_chart_sentimen_distribusi(hasil_tampil):
+    sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+    if not sentimen_list:
+        return None
+    counts = pd.Series(sentimen_list).value_counts().reset_index()
+    counts.columns = ["sentimen", "jumlah"]
+    fig = px.bar(
+        counts, x="sentimen", y="jumlah", color="sentimen",
+        category_orders={"sentimen": ["Positif", "Netral", "Negatif"]},
+        color_discrete_map=_WARNA_SENTIMEN,
+    )
+    fig.update_xaxes(type="category", title=None)
+    fig.update_yaxes(title=None)
+    fig.update_layout(showlegend=False)
+    return _layout_chart_ringkas(fig)
+
+# =========================================================
 # SENTIMENT TAGGING -- LEXICON-BASED SEDERHANA
 # Bukan machine learning, cuma hitung selisih kata positif vs negatif dari
 # daftar kata yang dikurasi manual. Gratis, instan, tanpa API -- tapi akurasinya
@@ -379,14 +467,33 @@ _KATA_NEGATIF = {
     "tersangka", "terdakwa", "dipenjara", "ditangkap", "diciduk", "disidang",
 }
 
+_KATA_NEGASI = {"tidak", "bukan", "jangan", "belum", "tanpa", "kurang", "gak", "ga"}
+_KATA_PENGUAT = {"sangat", "sekali", "banget", "amat", "begitu", "sungguh"}
+
 def analisis_sentimen(teks):
-    """Return (label, skor). Label salah satu dari 'Positif'/'Negatif'/'Netral'."""
+    """
+    Return (label, skor). Label salah satu dari 'Positif'/'Negatif'/'Netral'.
+    Versi 2: deteksi negasi (tidak/bukan/jangan dst di 2 kata sebelum kata
+    sentimen membalik polaritasnya) dan kata penguat (sangat/sekali dst di
+    2 kata sebelum ATAU sesudah menaikkan bobot jadi 2x). Tetap lexicon-based
+    sederhana -- gak paham sarkasme/konteks kompleks, tapi lebih akurat dari
+    versi polos buat kasus umum kayak "tidak optimis" atau "bagus sekali".
+    """
     if not teks:
         return "Netral", 0
     kata_list = re.findall(r"[a-z]+", teks.lower())
-    skor_pos = sum(1 for k in kata_list if k in _KATA_POSITIF)
-    skor_neg = sum(1 for k in kata_list if k in _KATA_NEGATIF)
-    skor = skor_pos - skor_neg
+    skor = 0
+    for i, kata in enumerate(kata_list):
+        polaritas = 1 if kata in _KATA_POSITIF else (-1 if kata in _KATA_NEGATIF else 0)
+        if polaritas != 0:
+            sebelum = kata_list[max(0, i - 2):i]
+            sesudah = kata_list[i + 1:i + 3]
+            ada_negasi = any(w in _KATA_NEGASI for w in sebelum)
+            ada_penguat = any(w in _KATA_PENGUAT for w in sebelum + sesudah)
+            bobot = 2 if ada_penguat else 1
+            if ada_negasi:
+                polaritas *= -1
+            skor += polaritas * bobot
     if skor > 0:
         return "Positif", skor
     elif skor < 0:
@@ -421,6 +528,51 @@ def cocok_semua_kata(teks, frasa):
         re.search(r"\b" + re.escape(kata) + r"\b", teks_lower)
         for kata in kata_list
     )
+
+# =========================================================
+# ENTITY/TOKOH EXTRACTION -- watchlist kurasi manual
+# Bukan auto-NER (sengaja, NER Bahasa Indonesia gratis kurang reliable).
+# User input daftar nama yang mau ditrack, tiap baris boleh berisi beberapa
+# alias dipisah koma (mis. "Sri Mulyani Indrawati, Sri Mulyani, Menkeu")
+# biar mention informal/parsial tetap ke-tangkep.
+# =========================================================
+def parse_daftar_tokoh(teks_input):
+    """Parse input multi-baris jadi list {nama_utama, alias}. Baris kosong diabaikan."""
+    daftar = []
+    for baris in (teks_input or "").strip().split("\n"):
+        alias_list = [a.strip() for a in baris.split(",") if a.strip()]
+        if alias_list:
+            daftar.append({"nama_utama": alias_list[0], "alias": alias_list})
+    return daftar
+
+def ekstrak_tokoh_disebut(teks, daftar_tokoh):
+    """Return list nama_utama tokoh yang disebut di teks (cek semua alias-nya)."""
+    if not teks or not daftar_tokoh:
+        return []
+    return [
+        tokoh["nama_utama"] for tokoh in daftar_tokoh
+        if any(cocok_frasa_persis(teks, alias) for alias in tokoh["alias"])
+    ]
+
+def buat_leaderboard_tokoh(hasil_tampil, daftar_tokoh):
+    """
+    Hitung jumlah sebutan + sentimen rata-rata per tokoh dari hasil pencarian.
+    Return list of dict, urut dari paling banyak disebut.
+    """
+    if not daftar_tokoh:
+        return []
+    data = {}
+    for item in hasil_tampil:
+        teks = f"{item.get('judul', '')} {item.get('konten') or item.get('ringkasan_redaksi') or ''}"
+        for nama in ekstrak_tokoh_disebut(teks, daftar_tokoh):
+            entri = data.setdefault(nama, {"nama": nama, "jumlah": 0, "skor_total": 0})
+            entri["jumlah"] += 1
+            entri["skor_total"] += item.get("sentimen_skor", 0) or 0
+    hasil = list(data.values())
+    for entri in hasil:
+        entri["skor_rata"] = round(entri["skor_total"] / entri["jumlah"], 2) if entri["jumlah"] else 0
+    hasil.sort(key=lambda x: x["jumlah"], reverse=True)
+    return hasil
 
 # =========================================================
 # SCRAPER PER SUMBER
@@ -1305,58 +1457,170 @@ with tab_cari:
         filter_tampil = st.multiselect("Tampilkan sumber:", sumber_unik, default=sumber_unik)
         hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
 
-        # ---------------- ANALISIS HASIL ----------------
-        with st.expander("📊 Analisis Hasil (word cloud, kata kunci & sentimen)"):
+        sub_artikel, sub_dashboard = st.tabs(["📰 Daftar Artikel", "📊 Dashboard Analitik"])
+
+        with sub_artikel:
+            for item in hasil_tampil:
+                tgl_str = item["tanggal"].strftime("%d %B %Y") if item.get("tanggal") else (item.get("tanggal_teks") or "Tanggal tidak diketahui")
+                with st.expander(f"📌 {item['judul']}  —  {item['sumber']} ({tgl_str})"):
+                    st.markdown(f"**Link:** [{item['link']}]({item['link']})")
+                    if item.get("catatan"):
+                        st.warning(item["catatan"])
+
+                    if item.get("sentimen"):
+                        emoji_sentimen = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(item["sentimen"], "⚪")
+                        st.caption(f"{emoji_sentimen} Sentimen: {item['sentimen']} (perkiraan kasar, lexicon-based)")
+
+                    if item.get("ringkasan"):
+                        st.markdown("**📝 Ringkasan Otomatis:**")
+                        st.write(item["ringkasan"])
+
+                    konten_valid = item.get("konten") and item["konten"] not in KONTEN_INVALID
+
+                    if item.get("ringkasan_ai"):
+                        st.markdown("**✨ Ringkasan AI (Gemini):**")
+                        st.write(item["ringkasan_ai"])
+                    elif konten_valid:
+                        if not GEMINI_API_KEY:
+                            st.caption("💡 Fitur ringkasan AI belum dikonfigurasi developer.")
+                        elif not st.session_state.get("ai_unlocked", False):
+                            st.caption("🔒 Fitur ringkasan AI terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+                        else:
+                            if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
+                                with st.spinner("Meringkas dengan Gemini..."):
+                                    hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
+                                if hasil_ai:
+                                    item["ringkasan_ai"] = hasil_ai
+                                    st.rerun()
+                                else:
+                                    st.error(f"Gagal membuat ringkasan AI: {error}")
+
+                    if item.get("konten"):
+                        st.markdown("**📰 Isi Lengkap:**")
+                        st.write(item["konten"])
+
+            st.subheader("⬇️ Unduh Hasil")
+
+            def buat_csv(data):
+                output = io.StringIO()
+                kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal",
+                         "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "sentimen", "konten", "catatan"]
+                writer = csv.DictWriter(output, fieldnames=kolom, extrasaction="ignore")
+                writer.writeheader()
+                for item in data:
+                    baris = dict(item)
+                    if isinstance(baris.get("tanggal"), datetime):
+                        baris["tanggal"] = baris["tanggal"].strftime("%Y-%m-%d")
+                    writer.writerow(baris)
+                return output.getvalue()
+
+            def buat_json(data):
+                salinan_semua = []
+                for item in data:
+                    salinan = dict(item)
+                    if isinstance(salinan.get("tanggal"), datetime):
+                        salinan["tanggal"] = salinan["tanggal"].strftime("%Y-%m-%d")
+                    salinan_semua.append(salinan)
+                return json.dumps(salinan_semua, ensure_ascii=False, indent=2)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "Unduh sebagai CSV",
+                    data=buat_csv(hasil_tampil),
+                    file_name=f"berita_{tema or 'hasil'}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with col2:
+                st.download_button(
+                    "Unduh sebagai JSON",
+                    data=buat_json(hasil_tampil),
+                    file_name=f"berita_{tema or 'hasil'}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+        with sub_dashboard:
+            with st.expander("🎭 Daftar Tokoh yang Dipantau"):
+                st.text_area(
+                    "1 tokoh per baris. Alias boleh dipisah koma supaya sebutan informal/parsial "
+                    "tetap ke-tangkep (contoh: Sri Mulyani Indrawati, Sri Mulyani, Menkeu)",
+                    height=100,
+                    key="input_tokoh",
+                )
+            daftar_tokoh = parse_daftar_tokoh(st.session_state.get("input_tokoh", ""))
+
             wc = buat_wordcloud(hasil_tampil)
             if wc:
-                fig, ax = plt.subplots(figsize=(10, 3.5))
-                ax.imshow(wc, interpolation="bilinear")
-                ax.axis("off")
-                st.pyplot(fig)
-                plt.close(fig)
+                fig_wc, ax_wc = plt.subplots(figsize=(10, 3.5))
+                ax_wc.imshow(wc, interpolation="bilinear")
+                ax_wc.axis("off")
+                st.pyplot(fig_wc)
+                plt.close(fig_wc)
             else:
                 st.caption("Belum cukup teks untuk membuat word cloud.")
 
-            col_kw, col_sent = st.columns(2)
-            with col_kw:
+            top_kw = hitung_top_keywords(hasil_tampil)
+            fig_kw = buat_chart_top_keywords(top_kw)
+            if fig_kw:
                 st.caption("Top 15 kata kunci")
-                top_kw = hitung_top_keywords(hasil_tampil)
-                if top_kw:
-                    df_kw = pd.DataFrame(top_kw, columns=["kata", "jumlah"]).set_index("kata")
-                    st.bar_chart(df_kw)
-                else:
-                    st.caption("Belum cukup teks.")
-            with col_sent:
-                st.caption("Distribusi sentimen (lexicon-based, kasar)")
-                sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
-                if sentimen_list:
-                    sentimen_counts = pd.Series(sentimen_list).value_counts()
-                    st.bar_chart(sentimen_counts)
-                else:
-                    st.caption("Belum ada data sentimen (perlu ambil isi/ringkasan dulu).")
+                st.plotly_chart(fig_kw, use_container_width=True)
+            else:
+                st.caption("Belum cukup teks buat kata kunci.")
+
+            st.divider()
 
             df_stat = buat_dataframe_statistik(hasil_tampil)
-            if not df_stat.empty:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.caption("Jumlah artikel per sumber")
-                    st.bar_chart(df_stat["sumber"].value_counts())
-                with col_b:
-                    st.caption("Jumlah artikel per hari")
-                    per_hari = df_stat.dropna(subset=["tanggal"]).groupby("tanggal").size()
-                    if not per_hari.empty:
-                        st.bar_chart(per_hari)
-                    else:
-                        st.caption("Tanggal tidak terbaca untuk sebagian besar artikel.")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.caption("Jumlah artikel per sumber")
+                fig_sumber = buat_chart_per_sumber(df_stat)
+                if fig_sumber:
+                    st.plotly_chart(fig_sumber, use_container_width=True)
+                else:
+                    st.caption("Belum ada data.")
+            with col_b:
+                st.caption("Jumlah artikel per hari")
+                fig_hari = buat_chart_per_hari(df_stat)
+                if fig_hari:
+                    st.plotly_chart(fig_hari, use_container_width=True)
+                else:
+                    st.caption("Tanggal tidak terbaca untuk sebagian besar artikel.")
 
-        # ---------------- LIPUTAN SAMA DARI BEBERAPA SUMBER ----------------
-        klaster = st.session_state.get("klaster", [])
-        klaster_tampil = [
-            k for k in klaster
-            if any(hasil[i] in hasil_tampil for i in k)
-        ]
-        if klaster_tampil:
-            with st.expander(f"🔗 Liputan Sama dari Beberapa Sumber ({len(klaster_tampil)} topik)"):
+            st.caption("Volume artikel per hari × sentimen")
+            fig_vol_sent = buat_chart_volume_sentimen_harian(hasil_tampil)
+            if fig_vol_sent:
+                st.plotly_chart(fig_vol_sent, use_container_width=True)
+            else:
+                st.caption("Belum cukup data sentimen+tanggal buat chart ini.")
+
+            st.caption("Distribusi sentimen (lexicon-based, kasar)")
+            fig_sent_dist = buat_chart_sentimen_distribusi(hasil_tampil)
+            if fig_sent_dist:
+                st.plotly_chart(fig_sent_dist, use_container_width=True)
+            else:
+                st.caption("Belum ada data sentimen (perlu ambil isi/ringkasan dulu).")
+
+            if daftar_tokoh:
+                st.divider()
+                st.caption("🎭 Leaderboard tokoh")
+                leaderboard = buat_leaderboard_tokoh(hasil_tampil, daftar_tokoh)
+                if leaderboard:
+                    for entri in leaderboard:
+                        emoji_tokoh = "🟢" if entri["skor_rata"] > 0 else ("🔴" if entri["skor_rata"] < 0 else "⚪")
+                        st.write(f"{emoji_tokoh} **{entri['nama']}** — {entri['jumlah']}x disebut · sentimen rata-rata: {entri['skor_rata']}")
+                else:
+                    st.caption("Belum ada tokoh dari daftar Anda yang ke-deteksi di hasil ini.")
+
+            klaster = st.session_state.get("klaster", [])
+            klaster_tampil = [
+                k for k in klaster
+                if any(hasil[i] in hasil_tampil for i in k)
+            ]
+            if klaster_tampil:
+                st.divider()
+                st.caption(f"🔗 Liputan Sama dari Beberapa Sumber ({len(klaster_tampil)} topik)")
                 for idx_klaster, indeks_artikel in enumerate(klaster_tampil):
                     artikel_klaster = [hasil[i] for i in indeks_artikel]
                     sumber_terlibat = ", ".join(sorted({a["sumber"] for a in artikel_klaster}))
@@ -1384,88 +1648,6 @@ with tab_cari:
                                 else:
                                     st.error(f"Gagal membandingkan: {error}")
                     st.divider()
-
-        for item in hasil_tampil:
-            tgl_str = item["tanggal"].strftime("%d %B %Y") if item.get("tanggal") else (item.get("tanggal_teks") or "Tanggal tidak diketahui")
-            with st.expander(f"📌 {item['judul']}  —  {item['sumber']} ({tgl_str})"):
-                st.markdown(f"**Link:** [{item['link']}]({item['link']})")
-                if item.get("catatan"):
-                    st.warning(item["catatan"])
-
-                if item.get("sentimen"):
-                    emoji_sentimen = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(item["sentimen"], "⚪")
-                    st.caption(f"{emoji_sentimen} Sentimen: {item['sentimen']} (perkiraan kasar, lexicon-based)")
-
-                if item.get("ringkasan"):
-                    st.markdown("**📝 Ringkasan Otomatis:**")
-                    st.write(item["ringkasan"])
-
-                konten_valid = item.get("konten") and item["konten"] not in KONTEN_INVALID
-
-                if item.get("ringkasan_ai"):
-                    st.markdown("**✨ Ringkasan AI (Gemini):**")
-                    st.write(item["ringkasan_ai"])
-                elif konten_valid:
-                    if not GEMINI_API_KEY:
-                        st.caption("💡 Fitur ringkasan AI belum dikonfigurasi developer.")
-                    elif not st.session_state.get("ai_unlocked", False):
-                        st.caption("🔒 Fitur ringkasan AI terkunci. Masukkan password di sidebar untuk mengaktifkan.")
-                    else:
-                        if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
-                            with st.spinner("Meringkas dengan Gemini..."):
-                                hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
-                            if hasil_ai:
-                                item["ringkasan_ai"] = hasil_ai
-                                st.rerun()
-                            else:
-                                st.error(f"Gagal membuat ringkasan AI: {error}")
-
-                if item.get("konten"):
-                    st.markdown("**📰 Isi Lengkap:**")
-                    st.write(item["konten"])
-
-        # ---------------- EKSPOR ----------------
-        st.subheader("⬇️ Unduh Hasil")
-
-        def buat_csv(data):
-            output = io.StringIO()
-            kolom = ["sumber", "judul", "link", "tanggal_teks", "tanggal",
-                     "ringkasan", "ringkasan_ai", "ringkasan_redaksi", "sentimen", "konten", "catatan"]
-            writer = csv.DictWriter(output, fieldnames=kolom, extrasaction="ignore")
-            writer.writeheader()
-            for item in data:
-                baris = dict(item)
-                if isinstance(baris.get("tanggal"), datetime):
-                    baris["tanggal"] = baris["tanggal"].strftime("%Y-%m-%d")
-                writer.writerow(baris)
-            return output.getvalue()
-
-        def buat_json(data):
-            salinan_semua = []
-            for item in data:
-                salinan = dict(item)
-                if isinstance(salinan.get("tanggal"), datetime):
-                    salinan["tanggal"] = salinan["tanggal"].strftime("%Y-%m-%d")
-                salinan_semua.append(salinan)
-            return json.dumps(salinan_semua, ensure_ascii=False, indent=2)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                "Unduh sebagai CSV",
-                data=buat_csv(hasil_tampil),
-                file_name=f"berita_{tema or 'hasil'}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        with col2:
-            st.download_button(
-                "Unduh sebagai JSON",
-                data=buat_json(hasil_tampil),
-                file_name=f"berita_{tema or 'hasil'}.json",
-                mime="application/json",
-                use_container_width=True,
-            )
     else:
         st.info("Masukkan tema di sidebar lalu klik **Cari Berita** untuk mulai.")
 
