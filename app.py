@@ -1020,6 +1020,22 @@ def ambil_riwayat_watchlist(watchlist_id, limit=200):
         st.error(f"Gagal ambil riwayat: {e}")
         return []
 
+def ambil_riwayat_dataframe(watchlist_id, limit=1000):
+    """
+    Riwayat watchlist sebagai DataFrame siap-agregasi, dipakai buat chart tren.
+    'tanggal_efektif' pakai tanggal_publish kalau ada (lebih akurat -- itu
+    kapan beritanya BENERAN terbit), fallback ke waktu_checkpoint kalau
+    tanggal_publish gak kebaca dari sumbernya.
+    """
+    data = ambil_riwayat_watchlist(watchlist_id, limit=limit)
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    tgl_publish = pd.to_datetime(df["tanggal_publish"], errors="coerce", utc=True)
+    tgl_checkpoint = pd.to_datetime(df["waktu_checkpoint"], errors="coerce", utc=True)
+    df["tanggal_efektif"] = tgl_publish.fillna(tgl_checkpoint).dt.date
+    return df
+
 # =========================================================
 # UI STREAMLIT
 # =========================================================
@@ -1029,13 +1045,6 @@ st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, Repub
 with st.sidebar:
     st.header("⚙️ Pengaturan Pencarian")
     tema = st.text_input("Tema / kata kunci berita", placeholder="contoh: kaesang")
-    match_persis = st.checkbox(
-        "Cari frasa persis (exact match)",
-        value=False,
-        help="Kalau tema lebih dari 1 kata (mis. 'indonesia esport'), hanya tampilkan "
-             "artikel yang judul/ringkasannya benar-benar mengandung frasa itu persis, "
-             "bukan yang cuma mengandung salah satu katanya saja."
-    )
     sumber_dipilih = st.multiselect(
         "Sumber berita",
         options=list(SCRAPER_PER_SUMBER.keys()),
@@ -1054,28 +1063,38 @@ with st.sidebar:
         st.caption(
             f"ℹ️ Tanpa filter manual, pencarian otomatis dibatasi ke "
             f"**{tanggal_mulai.strftime('%d %b %Y')} – {tanggal_akhir.strftime('%d %b %Y')}** "
-            f"biar lebih cepat & hemat resource. Centang opsi di atas untuk ubah rentang."
+            f"biar lebih cepat & hemat resource."
         )
-    max_halaman = st.slider("Jumlah halaman per sumber", min_value=1, max_value=10, value=3)
-    ambil_konten = st.checkbox("Ambil isi lengkap artikel + ringkasan otomatis (lebih lambat)", value=True)
+
+    with st.expander("⚙️ Pengaturan Lanjutan"):
+        max_halaman = st.slider("Jumlah halaman per sumber", min_value=1, max_value=10, value=3)
+        ambil_konten = st.checkbox("Ambil isi lengkap artikel + ringkasan otomatis (lebih lambat)", value=True)
+        match_persis = st.checkbox(
+            "Cari frasa persis (exact match)",
+            value=False,
+            help="Kalau tema lebih dari 1 kata (mis. 'indonesia esport'), hanya tampilkan "
+                 "artikel yang judul/ringkasannya benar-benar mengandung frasa itu persis, "
+                 "bukan yang cuma mengandung salah satu katanya saja."
+        )
+
     tombol_cari = st.button("🔍 Cari Berita", type="primary", use_container_width=True)
 
     st.divider()
-    st.subheader("✨ Ringkasan AI (Fitur Terbatas)")
+    st.subheader("✨ Fitur Terbatas (AI & Monitoring)")
 
     if "ai_unlocked" not in st.session_state:
         st.session_state.ai_unlocked = False
 
-    if not GEMINI_API_KEY:
+    if not AI_SUMMARY_PASSWORD:
         st.caption("Fitur belum dikonfigurasi developer. Coba lagi nanti.")
     elif st.session_state.ai_unlocked:
-        st.success("✅ Fitur ringkasan AI aktif untuk sesi ini.")
+        st.success("✅ Fitur AI & Monitoring aktif untuk sesi ini.")
     else:
         with st.form("form_password_ai", clear_on_submit=True):
             password_input = st.text_input("Password akses", type="password")
             submit_password = st.form_submit_button("Aktifkan", use_container_width=True)
         if submit_password:
-            if AI_SUMMARY_PASSWORD and password_input == AI_SUMMARY_PASSWORD:
+            if password_input == AI_SUMMARY_PASSWORD:
                 st.session_state.ai_unlocked = True
                 st.rerun()
             else:
@@ -1300,88 +1319,125 @@ with tab_monitoring:
         "jadi bisa dipakai buat lihat tren dari waktu ke waktu."
     )
 
-    if not SUPABASE:
-        st.error(
-            "Supabase belum terkoneksi. Pastikan `SUPABASE_URL` dan `SUPABASE_KEY` "
-            "sudah di-set di Streamlit secrets."
+    if not st.session_state.get("ai_unlocked", False):
+        st.warning(
+            "🔒 Fitur Monitoring terkunci. Masukkan password di sidebar "
+            "(\"✨ Fitur Terbatas\") untuk mengaktifkan."
         )
     else:
-        with st.expander("➕ Tambah Topik Baru"):
-            with st.form("form_tambah_watchlist", clear_on_submit=True):
-                nama_topik_baru = st.text_input("Nama topik", placeholder="contoh: Rupiah, Kaesang Pangarep")
-                kata_kunci_baru = st.text_input("Kata kunci pencarian", placeholder="contoh: rupiah")
-                sumber_baru = st.multiselect(
-                    "Sumber yang dipantau",
-                    options=list(SCRAPER_PER_SUMBER.keys()),
-                    default=list(SCRAPER_PER_SUMBER.keys())
-                )
-                exact_baru = st.checkbox("Cari frasa persis (exact match)", value=False, key="exact_match_watchlist")
-                submit_watchlist = st.form_submit_button("Tambah ke Watchlist", type="primary", use_container_width=True)
-
-            if submit_watchlist:
-                if not nama_topik_baru.strip() or not kata_kunci_baru.strip():
-                    st.warning("Nama topik dan kata kunci wajib diisi.")
-                elif not sumber_baru:
-                    st.warning("Pilih minimal 1 sumber.")
-                else:
-                    hasil_tambah = tambah_watchlist(
-                        nama_topik_baru.strip(), kata_kunci_baru.strip(), sumber_baru, exact_baru
-                    )
-                    if hasil_tambah:
-                        st.success(f"Topik '{nama_topik_baru}' ditambahkan ke watchlist.")
-                        st.rerun()
-
-        st.divider()
-
-        daftar_watchlist = ambil_watchlist()
-
-        if not daftar_watchlist:
-            st.info("Belum ada topik yang di-track. Tambahkan lewat form di atas.")
+        if not SUPABASE:
+            st.error(
+                "Supabase belum terkoneksi. Pastikan `SUPABASE_URL` dan `SUPABASE_KEY` "
+                "sudah di-set di Streamlit secrets."
+            )
         else:
-            for wl in daftar_watchlist:
-                with st.container(border=True):
-                    col_info, col_refresh, col_hapus = st.columns([3, 1, 1])
-                    with col_info:
-                        st.markdown(f"**{wl['nama_topik']}**")
-                        st.caption(
-                            f"Keyword: `{wl['kata_kunci']}` · "
-                            f"Sumber: {', '.join(wl['sumber_dipilih'])}"
-                            + (" · exact match" if wl.get("exact_match") else "")
+            with st.expander("➕ Tambah Topik Baru"):
+                with st.form("form_tambah_watchlist", clear_on_submit=True):
+                    nama_topik_baru = st.text_input("Nama topik", placeholder="contoh: Rupiah, Kaesang Pangarep")
+                    kata_kunci_baru = st.text_input("Kata kunci pencarian", placeholder="contoh: rupiah")
+                    sumber_baru = st.multiselect(
+                        "Sumber yang dipantau",
+                        options=list(SCRAPER_PER_SUMBER.keys()),
+                        default=list(SCRAPER_PER_SUMBER.keys())
+                    )
+                    exact_baru = st.checkbox("Cari frasa persis (exact match)", value=False, key="exact_match_watchlist")
+                    submit_watchlist = st.form_submit_button("Tambah ke Watchlist", type="primary", use_container_width=True)
+
+                if submit_watchlist:
+                    if not nama_topik_baru.strip() or not kata_kunci_baru.strip():
+                        st.warning("Nama topik dan kata kunci wajib diisi.")
+                    elif not sumber_baru:
+                        st.warning("Pilih minimal 1 sumber.")
+                    else:
+                        hasil_tambah = tambah_watchlist(
+                            nama_topik_baru.strip(), kata_kunci_baru.strip(), sumber_baru, exact_baru
                         )
-                        ringkasan_wl = ambil_ringkasan_watchlist(wl["id"])
-                        if ringkasan_wl["total"] > 0:
-                            terakhir_str = ringkasan_wl["terakhir"][:16].replace("T", " ") if ringkasan_wl["terakhir"] else "-"
-                            st.caption(f"📚 {ringkasan_wl['total']} artikel tersimpan · checkpoint terakhir: {terakhir_str}")
-                        else:
-                            st.caption("📚 Belum ada riwayat -- klik Refresh untuk checkpoint pertama.")
-                    with col_refresh:
-                        if st.button("🔄 Refresh", key=f"refresh_wl_{wl['id']}", use_container_width=True):
-                            with st.spinner(f"Refresh '{wl['nama_topik']}'..."):
-                                tgl_akhir_wl = datetime.now().date()
-                                tgl_mulai_wl = tgl_akhir_wl - timedelta(days=1)
-                                hasil_wl = cari_berita_cached(
-                                    tema=wl["kata_kunci"],
-                                    sumber_dipilih=wl["sumber_dipilih"],
-                                    tanggal_mulai=tgl_mulai_wl,
-                                    tanggal_akhir=tgl_akhir_wl,
-                                    max_halaman=3,
-                                    ambil_konten=True,
-                                    match_persis=wl.get("exact_match", False),
-                                    _progress_callback=None,
-                                )
-                                jumlah_baru = simpan_artikel_history(wl["id"], hasil_wl)
-                            st.success(f"{jumlah_baru} artikel baru disimpan (dari {len(hasil_wl)} ditemukan).")
-                            st.rerun()
-                    with col_hapus:
-                        if st.button("🗑️ Hapus", key=f"hapus_wl_{wl['id']}", use_container_width=True):
-                            hapus_watchlist(wl["id"])
+                        if hasil_tambah:
+                            st.success(f"Topik '{nama_topik_baru}' ditambahkan ke watchlist.")
                             st.rerun()
 
-                    with st.expander("Lihat riwayat artikel"):
-                        riwayat_wl = ambil_riwayat_watchlist(wl["id"], limit=50)
-                        if riwayat_wl:
-                            for art in riwayat_wl:
-                                emoji_sent = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(art.get("sentimen"), "⚪")
-                                st.markdown(f"{emoji_sent} [{art['judul']}]({art['link']}) — *{art['sumber']}*")
-                        else:
-                            st.caption("Belum ada riwayat tersimpan.")
+            st.divider()
+
+            daftar_watchlist = ambil_watchlist()
+
+            if not daftar_watchlist:
+                st.info("Belum ada topik yang di-track. Tambahkan lewat form di atas.")
+            else:
+                total_artikel_semua = sum(ambil_ringkasan_watchlist(wl["id"])["total"] for wl in daftar_watchlist)
+                col_m1, col_m2 = st.columns(2)
+                col_m1.metric("Topik Dipantau", len(daftar_watchlist))
+                col_m2.metric("Total Artikel Tersimpan", total_artikel_semua)
+                st.divider()
+
+                for wl in daftar_watchlist:
+                    with st.container(border=True):
+                        col_info, col_refresh, col_hapus = st.columns([3, 1, 1])
+                        with col_info:
+                            st.markdown(f"**{wl['nama_topik']}**")
+                            st.caption(
+                                f"Keyword: `{wl['kata_kunci']}` · "
+                                f"Sumber: {', '.join(wl['sumber_dipilih'])}"
+                                + (" · exact match" if wl.get("exact_match") else "")
+                            )
+                            ringkasan_wl = ambil_ringkasan_watchlist(wl["id"])
+                            if ringkasan_wl["total"] > 0:
+                                terakhir_str = ringkasan_wl["terakhir"][:16].replace("T", " ") if ringkasan_wl["terakhir"] else "-"
+                                st.caption(f"📚 {ringkasan_wl['total']} artikel tersimpan · checkpoint terakhir: {terakhir_str}")
+                            else:
+                                st.caption("📚 Belum ada riwayat -- klik Refresh untuk checkpoint pertama.")
+                        with col_refresh:
+                            if st.button("🔄 Refresh", key=f"refresh_wl_{wl['id']}", use_container_width=True):
+                                with st.spinner(f"Refresh '{wl['nama_topik']}'..."):
+                                    tgl_akhir_wl = datetime.now().date()
+                                    tgl_mulai_wl = tgl_akhir_wl - timedelta(days=1)
+                                    hasil_wl = cari_berita_cached(
+                                        tema=wl["kata_kunci"],
+                                        sumber_dipilih=wl["sumber_dipilih"],
+                                        tanggal_mulai=tgl_mulai_wl,
+                                        tanggal_akhir=tgl_akhir_wl,
+                                        max_halaman=3,
+                                        ambil_konten=True,
+                                        match_persis=wl.get("exact_match", False),
+                                        _progress_callback=None,
+                                    )
+                                    jumlah_baru = simpan_artikel_history(wl["id"], hasil_wl)
+                                st.success(f"{jumlah_baru} artikel baru disimpan (dari {len(hasil_wl)} ditemukan).")
+                                st.rerun()
+                        with col_hapus:
+                            if st.button("🗑️ Hapus", key=f"hapus_wl_{wl['id']}", use_container_width=True):
+                                hapus_watchlist(wl["id"])
+                                st.rerun()
+
+                        with st.expander("📊 Analitik & Tren"):
+                            df_riwayat = ambil_riwayat_dataframe(wl["id"])
+                            if df_riwayat.empty:
+                                st.caption("Belum cukup data buat dianalisis -- refresh dulu beberapa kali.")
+                            else:
+                                col_vol, col_sov = st.columns(2)
+                                with col_vol:
+                                    st.caption("Volume artikel per hari")
+                                    volume_harian = df_riwayat.groupby("tanggal_efektif").size()
+                                    st.bar_chart(volume_harian)
+                                with col_sov:
+                                    st.caption("Share of voice (per sumber)")
+                                    sov = df_riwayat["sumber"].value_counts()
+                                    st.bar_chart(sov)
+
+                                if "sentimen" in df_riwayat.columns and df_riwayat["sentimen"].notna().any():
+                                    st.caption("Tren sentimen per hari")
+                                    sentimen_harian = (
+                                        df_riwayat.dropna(subset=["sentimen"])
+                                        .groupby(["tanggal_efektif", "sentimen"])
+                                        .size()
+                                        .unstack(fill_value=0)
+                                    )
+                                    st.bar_chart(sentimen_harian)
+
+                        with st.expander("Lihat riwayat artikel"):
+                            riwayat_wl = ambil_riwayat_watchlist(wl["id"], limit=50)
+                            if riwayat_wl:
+                                for art in riwayat_wl:
+                                    emoji_sent = {"Positif": "🟢", "Negatif": "🔴", "Netral": "⚪"}.get(art.get("sentimen"), "⚪")
+                                    st.markdown(f"{emoji_sent} [{art['judul']}]({art['link']}) — *{art['sumber']}*")
+                            else:
+                                st.caption("Belum ada riwayat tersimpan.")
