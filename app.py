@@ -1462,9 +1462,9 @@ SELECTOR_KONTEN = {
     # source artikel asli. Lebih stabil drpada class CSS auto-generated
     # styled-components (mis. "c275a64364") yang berubah tiap mereka deploy ulang.
     "kumparan.com": ("main", {"attrs": {"data-qa-id": "article-main"}}),
-    # tempo.co: Nuxt.js SSR, konten artikel ada di div.detail-konten atau article.
-    # best-effort -- API search sudah provide ringkasan, jadi ini hanya fallback.
-    "tempo.co": ("div", {"class_": "detail-konten"}),
+    # tempo.co: konten terpecah di banyak div#content-wrapper (bukan satu container tunggal).
+    # Ditangani sebagai special case di scrape_isi_artikel(), bukan via selector generik.
+    # Entry ini sengaja dihapus -- kalau ikut di sini, logic find() akan selalu None.
     # theconversation.com: SSR bersih, konten ada di div.article-body
     "theconversation.com": ("div", {"class_": "article-body"}),
 }
@@ -1474,6 +1474,30 @@ def scrape_isi_artikel(url, progress_callback=None):
     if not html:
         return "Gagal mengambil halaman"
     soup = BeautifulSoup(html, "html.parser")
+
+    # ── Special case: Tempo.co ────────────────────────────────────────────────
+    # Isi artikel tidak dalam satu container tunggal. Tempo memecah artikel jadi
+    # banyak potongan, masing-masing di div#content-wrapper (muncul 20+ kali per
+    # halaman). Div lain (iklan, "BACA JUGA", paywall) tidak pakai id ini, jadi
+    # cukup ambil semua div#content-wrapper dan gabungkan teksnya.
+    # Noise tambahan: "Pilihan Editor: <judul>" disisipkan di tengah artikel --
+    # dibersihkan via regex setelah teks digabung.
+    if "tempo.co" in url:
+        wrappers = soup.find_all("div", id="content-wrapper")
+        if wrappers:
+            teks_list = []
+            for w in wrappers:
+                teks = w.get_text(separator=" ", strip=True)
+                if teks:
+                    teks_list.append(teks)
+            isi = " ".join(teks_list)
+            # Bersihkan noise "Pilihan Editor: <judul artikel lain>"
+            isi = re.sub(r'Pilihan Editor\s*:?\s*[^.!?]*[.!?]?', '', isi, flags=re.IGNORECASE)
+            isi = re.sub(r'\s{2,}', ' ', isi).strip()
+            return isi if isi else "Konten tidak ditemukan"
+        return "Konten tidak ditemukan (div#content-wrapper tidak ada)"
+
+    # ── Generic selector untuk sumber lain ────────────────────────────────────
     domain_cocok = next((d for d in SELECTOR_KONTEN if d in url), None)
     if domain_cocok:
         tag, attrs = SELECTOR_KONTEN[domain_cocok]
