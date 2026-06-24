@@ -352,7 +352,7 @@ def buat_dataframe_statistik(hasil_tampil):
     for item in hasil_tampil:
         tgl = item.get("tanggal")
         baris.append({
-            "sumber": item.get("sumber", "Lainnya"),
+            "sumber": _sumber_grup(item),
             "tanggal": tgl.date() if isinstance(tgl, datetime) else None,
         })
     return pd.DataFrame(baris)
@@ -482,7 +482,7 @@ def hitung_source_diversity(hasil_tampil):
     """
     if not hasil_tampil:
         return None
-    sumber_counter = Counter(item["sumber"] for item in hasil_tampil)
+    sumber_counter = Counter(_sumber_grup(item) for item in hasil_tampil)
     n = len(sumber_counter)
     if n <= 1:
         return 0.0
@@ -609,7 +609,7 @@ def buat_chart_bias_sumber(hasil_tampil):
     baris = []
     for item in hasil_tampil:
         if item.get("sentimen") and item.get("sumber"):
-            baris.append({"sumber": item["sumber"], "sentimen": item["sentimen"]})
+            baris.append({"sumber": _sumber_grup(item), "sentimen": item["sentimen"]})
     if not baris:
         return None
     df = pd.DataFrame(baris)
@@ -690,7 +690,7 @@ def auto_pilih_artikel(hasil_tampil, max_artikel=PDF_MAX_ARTIKEL):
     sumber_count = {}
     # Ambil max 5 per sumber supaya tidak dominan satu sumber
     for _, idx in skor:
-        sumber = hasil_tampil[idx].get("sumber", "")
+        sumber = _sumber_grup(hasil_tampil[idx])
         if sumber_count.get(sumber, 0) < 5:
             dipilih.append(idx)
             sumber_count[sumber] = sumber_count.get(sumber, 0) + 1
@@ -771,7 +771,7 @@ def generate_cluster_summaries(artikel_dipilih, api_key, bahasa="Indonesia", pro
     # Kelompokkan per sumber
     per_sumber = {}
     for item in artikel_dipilih:
-        sumber = item.get("sumber", "Lainnya")
+        sumber = _sumber_grup(item)
         per_sumber.setdefault(sumber, []).append(item)
 
     summaries = []
@@ -1190,7 +1190,7 @@ def hitung_sov_data(hasil_tampil):
     total = len(hasil_tampil)
     per_sumber = {}
     for item in hasil_tampil:
-        s = item.get("sumber", "Lainnya")
+        s = _sumber_grup(item)
         per_sumber.setdefault(s, []).append(item.get("sentimen", "Netral"))
 
     hasil = []
@@ -1526,8 +1526,10 @@ def scrape_detik(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
                     tanggal_obj = parse_tanggal(tanggal_teks)
 
             if judul and link:
+                nama_subkanal = sumber_tag.get_text(strip=True) if sumber_tag else '-'
                 hasil.append({
-                    "sumber": f"Detik ({sumber_tag.get_text(strip=True) if sumber_tag else '-'})",
+                    "sumber": f"Detik ({nama_subkanal})",
+                    "sumber_grup": "Detik",  # untuk agregasi metrik & chart
                     "judul": judul,
                     "link": link,
                     "ringkasan_redaksi": desc_tag.get_text(strip=True) if desc_tag else None,
@@ -2030,6 +2032,11 @@ SCRAPER_PER_SUMBER = {
     "The Conversation": scrape_theconversation,
 }
 SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6", "CNBC Indonesia", "Tempo.co", "The Conversation"}
+
+def _sumber_grup(item):
+    """Return sumber_grup kalau ada (Detik sub-kanal), fallback ke sumber asli.
+    Dipakai oleh semua fungsi metrik & chart supaya Detik teragregasi jadi 1."""
+    return item.get("sumber_grup") or item.get("sumber", "Lainnya")
 
 # =========================================================
 # AMBIL ISI ARTIKEL (untuk sumber yang gak include konten lengkap di search result)
@@ -2553,7 +2560,7 @@ with tab_cari:
             elif sort_by == "Sentimen (negatif dulu)":
                 hasil_tampil.sort(key=lambda x: _URUT_SENT.get(x.get("sentimen", "Netral"), 1), reverse=True)
             elif sort_by == "Sumber (A–Z)":
-                hasil_tampil.sort(key=lambda x: x.get("sumber", ""))
+                hasil_tampil.sort(key=lambda x: _sumber_grup(x))
 
             st.caption(f"Menampilkan {len(hasil_tampil)} dari {len(hasil)} artikel")
             st.divider()
