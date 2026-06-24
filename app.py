@@ -1211,34 +1211,44 @@ def scrape_kumparan(tema, max_halaman=3, progress_callback=None):
 
 def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
     """
-    Tempo.co via POST JSON API (/api/search/articles) -- Nuxt.js frontend,
-    data artikel di-load dari endpoint ini, bukan dari HTML.
-    Filter tanggal pakai unix timestamp UTC: start_date jam 00:00:00,
-    end_date jam 23:59:59. Pagination via offset (kelipatan 20).
-    Ringkasan: ambil dari field summary (array of strings, artikel premium/freemium)
-    atau description (strip HTML tag, semua tipe akses).
-    published_at format ISO 8601 + Z (UTC) -- potong ke 19 char buat strptime,
-    TIDAK perlu .replace(tzinfo=None) karena kita parse manual (bukan fromisoformat).
+    Tempo.co via POST JSON API (/api/search/articles) -- Nuxt.js frontend.
+    Filter tanggal pakai unix timestamp UTC. Pagination via offset (kelipatan 20).
+    Ringkasan: summary array (artikel premium) atau description (strip HTML).
 
-    BUGFIX: API Tempo membutuhkan 2 hal yang tidak dimiliki SESSION default:
-    1. Cookie dari Cloudflare + Tempo (di-set saat GET halaman search pertama kali)
-    2. Header XHR yang benar (Sec-Fetch-Mode: cors, bukan navigate) + Origin/Referer
-    Solusi: warm-up GET dulu -> SESSION dapat cookie -> POST dengan header override.
-    Header di-pass langsung ke SESSION.post() sehingga merge+override header SESSION
-    hanya untuk request ini, tanpa mengubah SESSION global (scraper lain aman).
+    BUGFIX v2: Pakai fresh session khusus Tempo (bukan SESSION global) dengan
+    header minimal persis seperti script Colab yang terbukti berhasil.
+    SESSION global punya banyak HTML-scraping header (Sec-Fetch-User, Upgrade-
+    Insecure-Requests, Accept: text/html, dll.) yang membuat Cloudflare Tempo
+    memperlakukan request secara berbeda vs. session bersih. Fresh session juga
+    menghindari interferensi cookie dari scraper lain yang pakai SESSION yang sama.
     """
     hasil = []
     limit = 20
     url_referer = f"https://www.tempo.co/search?q={quote(tema)}"
 
-    # Warm-up GET: buka halaman search Tempo supaya SESSION mendapatkan cookie
-    # Cloudflare (_cfuvid) dan Tempo (browser_id, status_user, dll) sebelum POST.
-    # Tanpa ini, API mengembalikan hits:[] meski HTTP 200.
-    ambil_halaman(url_referer, progress_callback=progress_callback)
+    # Fresh session minimal -- persis seperti Colab yang terbukti berhasil
+    sesi_tempo = requests.Session()
+    sesi_tempo.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/149.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+    })
 
-    # Header khusus untuk XHR POST -- override header SESSION yang didesain untuk HTML.
-    # Sec-Fetch-* dan Origin/Referer harus sesuai dengan apa yang browser kirim
-    # saat fetch() ke same-origin API endpoint.
+    # Warm-up GET: buka halaman search supaya sesi_tempo mendapat cookie
+    # Cloudflare (_cfuvid) sebelum POST ke API. Terbukti di Colab: tanpa ini hits=[].
+    try:
+        time.sleep(random.uniform(0.8, 1.5))
+        warmup = sesi_tempo.get(url_referer, timeout=15)
+        if warmup.status_code != 200 and progress_callback:
+            progress_callback(f"⚠️ Tempo warm-up: HTTP {warmup.status_code}")
+    except requests.RequestException as e:
+        if progress_callback:
+            progress_callback(f"⚠️ Tempo warm-up gagal: {type(e).__name__}")
+
+    # Header XHR untuk POST -- sama seperti yang dikirim browser saat fetch() ke API
     headers_api = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -1249,12 +1259,12 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
         "Sec-Fetch-Site": "same-origin",
     }
 
-    # Konversi date ke unix timestamp UTC (calendar.timegm pakai UTC, bukan local)
+    # Konversi date ke unix timestamp UTC
     unix_mulai = None
     unix_akhir = None
     if tanggal_mulai and tanggal_akhir:
         unix_mulai = int(calendar.timegm(tanggal_mulai.timetuple()))
-        unix_akhir = int(calendar.timegm(tanggal_akhir.timetuple())) + 86399  # +23:59:59
+        unix_akhir = int(calendar.timegm(tanggal_akhir.timetuple())) + 86399  # 23:59:59
 
     for p in range(max_halaman):
         offset = p * limit
@@ -1278,7 +1288,7 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
 
         try:
             time.sleep(random.uniform(0.8, 1.5))
-            resp = SESSION.post(
+            resp = sesi_tempo.post(
                 "https://www.tempo.co/api/search/articles",
                 json=payload,
                 headers=headers_api,
@@ -1311,7 +1321,6 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
 
             link = f"https://www.tempo.co/{canonical}"
 
-            # Tanggal: published_at = "2026-06-16T10:34:14Z" -> slice 19 char -> naive datetime
             tanggal_obj = None
             tanggal_teks = art.get("published_at") or ""
             if tanggal_teks:
@@ -1320,7 +1329,6 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
                 except ValueError:
                     tanggal_obj = parse_tanggal(tanggal_teks)
 
-            # Ringkasan: summary array (artikel berbayar) > description (semua)
             summary_list = art.get("summary") or []
             if summary_list:
                 ringkasan_redaksi = " ".join(summary_list)
@@ -1338,7 +1346,6 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
                 "konten": None,
             })
 
-        # Stop kondisi: offset melebihi total hits atau halaman tidak penuh
         total_hits = data.get("estimatedTotalHits", 0)
         if not hits or offset + limit >= total_hits or len(hits) < limit:
             break
