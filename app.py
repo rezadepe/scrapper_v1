@@ -12,7 +12,6 @@ import csv
 import json
 import re
 import io
-import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 import xml.etree.ElementTree as ET
@@ -25,6 +24,9 @@ from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFacto
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import plotly.express as px
+import plotly.graph_objects as go
+import math
+import calendar
 from supabase import create_client
 
 # =========================================================
@@ -439,6 +441,191 @@ def buat_chart_sentimen_distribusi(hasil_tampil):
     return _layout_chart_ringkas(fig)
 
 # =========================================================
+# FASE 2 — METRIK PR & MEDIA INTELLIGENCE
+# =========================================================
+def hitung_nss(hasil_tampil):
+    """
+    Net Sentiment Score: (positif - negatif) / total × 100. Range -100 s/d +100.
+    Positif murni = +100, negatif murni = -100, seimbang = 0.
+    """
+    sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+    if not sentimen_list:
+        return None
+    positif = sentimen_list.count("Positif")
+    negatif = sentimen_list.count("Negatif")
+    total = len(sentimen_list)
+    return round((positif - negatif) / total * 100, 1)
+
+def hitung_source_diversity(hasil_tampil):
+    """
+    Normalized Shannon entropy (0-100). 0 = semua dari 1 sumber,
+    100 = distribusi sempurna merata ke semua sumber aktif.
+    """
+    if not hasil_tampil:
+        return None
+    sumber_counter = Counter(item["sumber"] for item in hasil_tampil)
+    n = len(sumber_counter)
+    if n <= 1:
+        return 0.0
+    total = len(hasil_tampil)
+    entropy = -sum((c / total) * math.log(c / total) for c in sumber_counter.values())
+    return round(entropy / math.log(n) * 100, 1)
+
+def hitung_prominence(hasil_tampil, tema):
+    """
+    Prominence Score: % artikel yang tema muncul tepat di judul (bukan cuma di isi).
+    Makin tinggi = topik jadi headline utama, bukan cuma sebutan sampingan.
+    """
+    if not hasil_tampil or not tema:
+        return None
+    tema_lower = tema.lower().strip()
+    total = len(hasil_tampil)
+    muncul_di_judul = sum(
+        1 for item in hasil_tampil
+        if tema_lower in (item.get("judul") or "").lower()
+    )
+    return round(muncul_di_judul / total * 100, 1) if total else None
+
+def hitung_konsensus_kontroversi(hasil_tampil):
+    """
+    Indikator konsensus vs kontroversial berdasarkan distribusi sentimen.
+    Konsensus: 1 sentimen dominan >= 70%.
+    Kontroversial: positif vs negatif bersaing ketat (selisih < 20%, keduanya >= 15%).
+    Campuran: di antara keduanya.
+    Return dict {label, emoji, detail} atau None kalau datanya kurang.
+    """
+    sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
+    if len(sentimen_list) < 3:
+        return None
+    total = len(sentimen_list)
+    pos = sentimen_list.count("Positif")
+    neg = sentimen_list.count("Negatif")
+    net = sentimen_list.count("Netral")
+    pct_pos = pos / total * 100
+    pct_neg = neg / total * 100
+    pct_net = net / total * 100
+    dominan_pct = max(pct_pos, pct_neg, pct_net)
+
+    if dominan_pct >= 70:
+        label_dom = "Positif" if pct_pos == dominan_pct else ("Negatif" if pct_neg == dominan_pct else "Netral")
+        return {
+            "label": "Konsensus",
+            "emoji": "🤝",
+            "detail": f"Pemberitaan didominasi sentimen **{label_dom}** ({dominan_pct:.0f}% dari {total} artikel)",
+        }
+    elif abs(pct_pos - pct_neg) <= 20 and min(pct_pos, pct_neg) >= 15:
+        return {
+            "label": "Kontroversial",
+            "emoji": "⚡",
+            "detail": f"Pemberitaan terpolarisasi — Positif {pct_pos:.0f}% vs Negatif {pct_neg:.0f}% dari {total} artikel",
+        }
+    else:
+        return {
+            "label": "Campuran",
+            "emoji": "🔀",
+            "detail": f"Sentimen beragam tanpa dominasi kuat (Positif {pct_pos:.0f}%, Netral {pct_net:.0f}%, Negatif {pct_neg:.0f}%)",
+        }
+
+# =========================================================
+# FASE 3 — CHART INTERAKTIF DASHBOARD ANALITIK
+# =========================================================
+def buat_chart_nss_trend(hasil_tampil):
+    """
+    Line chart NSS per hari (Plotly interaktif, zoom via rangeslider).
+    Tiap titik = NSS hari itu, warna titik ikut polaritas.
+    Garis putus-putus di y=0 sebagai baseline netral.
+    """
+    baris = []
+    for item in hasil_tampil:
+        tgl = item.get("tanggal")
+        if isinstance(tgl, datetime) and item.get("sentimen"):
+            baris.append({"tanggal": tgl.date(), "sentimen": item["sentimen"]})
+    if len(baris) < 2:
+        return None
+
+    df = pd.DataFrame(baris)
+
+    def _nss_per_hari(grp):
+        tot = len(grp)
+        p = (grp["sentimen"] == "Positif").sum()
+        n = (grp["sentimen"] == "Negatif").sum()
+        return round((p - n) / tot * 100, 1)
+
+    nss_harian = df.groupby("tanggal").apply(_nss_per_hari).reset_index()
+    nss_harian.columns = ["tanggal", "nss"]
+    nss_harian = nss_harian.sort_values("tanggal")
+    nss_harian["tanggal_str"] = nss_harian["tanggal"].apply(lambda d: d.strftime("%d %b"))
+    nss_harian["warna"] = nss_harian["nss"].apply(
+        lambda v: "#1D9E75" if v > 0 else ("#D85A30" if v < 0 else "#888780")
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=nss_harian["tanggal_str"],
+        y=nss_harian["nss"],
+        mode="lines+markers",
+        marker=dict(color=nss_harian["warna"].tolist(), size=9),
+        line=dict(color="#378ADD", width=2),
+        hovertemplate="<b>%{x}</b><br>NSS: %{y}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_dash="dash", line_color="#888780", line_width=1)
+    fig.update_layout(
+        xaxis=dict(type="category", title=None),
+        yaxis=dict(title="NSS", range=[-105, 105]),
+        margin=dict(l=0, r=0, t=10, b=0),
+        height=260,
+    )
+    return fig
+
+def buat_chart_bias_sumber(hasil_tampil):
+    """
+    Stacked bar 100% — profil sentimen per sumber.
+    Sumber diurutkan berdasarkan % Positif tertinggi ke terendah,
+    memudahkan identifikasi sumber yang sistematis lebih positif/negatif.
+    """
+    baris = []
+    for item in hasil_tampil:
+        if item.get("sentimen") and item.get("sumber"):
+            baris.append({"sumber": item["sumber"], "sentimen": item["sentimen"]})
+    if not baris:
+        return None
+    df = pd.DataFrame(baris)
+    agg = df.groupby(["sumber", "sentimen"]).size().reset_index(name="jumlah")
+    total_per_sumber = df.groupby("sumber").size().reset_index(name="total")
+    agg = agg.merge(total_per_sumber, on="sumber")
+    agg["persen"] = round(agg["jumlah"] / agg["total"] * 100, 1)
+
+    # Urutkan dari % Positif tertinggi
+    pct_pos_per_sumber = (
+        agg[agg["sentimen"] == "Positif"]
+        .set_index("sumber")["persen"]
+        .to_dict()
+    )
+    urutan_sumber = sorted(
+        agg["sumber"].unique(),
+        key=lambda s: pct_pos_per_sumber.get(s, 0),
+        reverse=True,
+    )
+
+    fig = px.bar(
+        agg, x="sumber", y="persen", color="sentimen",
+        category_orders={
+            "sumber": urutan_sumber,
+            "sentimen": ["Positif", "Netral", "Negatif"],
+        },
+        color_discrete_map=_WARNA_SENTIMEN,
+        barmode="stack",
+    )
+    fig.update_xaxes(type="category", title=None)
+    fig.update_yaxes(title="%", range=[0, 105])
+    fig.update_layout(
+        legend_title=None,
+        margin=dict(l=0, r=0, t=10, b=0),
+        height=300,
+    )
+    return fig
+
+# =========================================================
 # SENTIMENT TAGGING -- LEXICON-BASED SEDERHANA
 # Bukan machine learning, cuma hitung selisih kata positif vs negatif dari
 # daftar kata yang dikurasi manual. Gratis, instan, tanpa API -- tapi akurasinya
@@ -574,122 +761,6 @@ def buat_leaderboard_tokoh(hasil_tampil, daftar_tokoh):
         entri["skor_rata"] = round(entri["skor_total"] / entri["jumlah"], 2) if entri["jumlah"] else 0
     hasil.sort(key=lambda x: x["jumlah"], reverse=True)
     return hasil
-
-# =========================================================
-# METRIK FASE 2 -- gaya agensi PR/media intelligence
-# =========================================================
-
-def hitung_nss(hasil_tampil):
-    """Net Sentiment Score: (%Positif - %Negatif), rentang -100..+100."""
-    sentimen_list = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
-    total = len(sentimen_list)
-    if total == 0:
-        return 0.0
-    pos = sum(1 for s in sentimen_list if s == "Positif")
-    neg = sum(1 for s in sentimen_list if s == "Negatif")
-    return round(((pos - neg) / total) * 100, 1)
-
-def hitung_skor_diversitas_sumber(hasil_tampil):
-    """
-    Skor diversitas sumber (0-1) pakai normalized Shannon entropy.
-    1.0 = artikel tersebar merata di semua sumber yang berkontribusi.
-    Mendekati 0 = liputan terpusat di 1-2 sumber doang.
-    """
-    sumber_list = [item.get("sumber") for item in hasil_tampil if item.get("sumber")]
-    if not sumber_list:
-        return 0.0
-    counts = Counter(sumber_list)
-    total = len(sumber_list)
-    n_sumber = len(counts)
-    if n_sumber <= 1:
-        return 0.0
-    entropy = -sum((c / total) * math.log(c / total) for c in counts.values())
-    entropy_maks = math.log(n_sumber)
-    return round(entropy / entropy_maks, 2)
-
-def hitung_skor_prominence(item, tema):
-    """
-    Skor 0-100 per artikel: makin tinggi makin menonjol posisi kata kunci.
-    Judul=100, lead/300 karakter pertama=60, sisa isi=20, gak ketemu=0.
-    """
-    if not tema or not tema.strip():
-        return 0
-    tema_lower = tema.lower().strip()
-    judul = (item.get("judul") or "").lower()
-    konten = (item.get("konten") or item.get("ringkasan_redaksi") or "").lower()
-    if tema_lower in judul:
-        return 100
-    if tema_lower in konten[:300]:
-        return 60
-    if tema_lower in konten:
-        return 20
-    return 0
-
-def hitung_skor_prominence_agregat(hasil_tampil, tema):
-    skor_list = [hitung_skor_prominence(item, tema) for item in hasil_tampil]
-    return round(sum(skor_list) / len(skor_list), 1) if skor_list else 0
-
-def parse_pilar_pesan(teks_input):
-    """Parse input format 'Nama Pilar: kw1, kw2, ...' (1 baris per pilar)."""
-    daftar = []
-    for baris in (teks_input or "").strip().split("\n"):
-        if ":" not in baris:
-            continue
-        nama, kw_str = baris.split(":", 1)
-        keywords = [k.strip().lower() for k in kw_str.split(",") if k.strip()]
-        if nama.strip() and keywords:
-            daftar.append({"nama_pilar": nama.strip(), "keywords": keywords})
-    return daftar
-
-def cek_resonansi_pilar(item, pilar):
-    """True kalau artikel mengandung minimal 1 keyword dari pilar (OR logic)."""
-    teks = f"{item.get('judul', '')} {item.get('konten') or item.get('ringkasan_redaksi') or ''}".lower()
-    return any(kw in teks for kw in pilar["keywords"])
-
-def hitung_resonansi_semua_pilar(hasil_tampil, daftar_pilar):
-    hasil = []
-    total = len(hasil_tampil)
-    for pilar in daftar_pilar:
-        jumlah = sum(1 for item in hasil_tampil if cek_resonansi_pilar(item, pilar))
-        persentase = round((jumlah / total) * 100, 1) if total else 0
-        hasil.append({"nama_pilar": pilar["nama_pilar"], "jumlah_artikel": jumlah, "persentase": persentase})
-    return hasil
-
-DEFAULT_BOBOT_TIER = {
-    "CNBC Indonesia": 3, "CNN Indonesia": 3, "Detik": 3, "Kompas": 3,
-    "Republika": 2, "Liputan6": 2, "Kumparan": 2,
-}
-
-def hitung_media_impact_score(hasil_tampil, bobot_tier):
-    """Media Impact Score = jumlah artikel x bobot tier sumbernya."""
-    counts = Counter(item.get("sumber") for item in hasil_tampil if item.get("sumber"))
-    return [
-        {"sumber": s, "jumlah_artikel": j, "bobot": bobot_tier.get(s, 1), "skor_impact": j * bobot_tier.get(s, 1)}
-        for s, j in counts.items()
-    ]
-
-DEFAULT_TARIF_PER_KATA = {
-    "CNBC Indonesia": 500, "CNN Indonesia": 500, "Detik": 500, "Kompas": 500,
-    "Republika": 300, "Liputan6": 300, "Kumparan": 300,
-}
-_PENGALI_SENTIMEN_PR = {"Positif": 1.5, "Netral": 0.5, "Negatif": 0.0}
-
-def hitung_pr_value(item, tarif_per_kata):
-    """
-    PR Value/AVE -- estimasi nilai publisitas setara nilai iklan (IDR).
-    PENTING: tarif per kata itu ASUMSI/fiktif yang ditentukan user, bukan data
-    resmi. AVE sendiri kontroversial secara akademis (AMEC menentang
-    penggunaannya), tapi masih sering diminta industri di Indonesia -- makanya
-    selalu tampilkan dengan disclaimer jelas, jangan seolah angka pasti.
-    """
-    konten = item.get("konten") or item.get("ringkasan_redaksi") or ""
-    jumlah_kata = len(konten.split())
-    tarif = tarif_per_kata.get(item.get("sumber"), 300)
-    pengali = _PENGALI_SENTIMEN_PR.get(item.get("sentimen"), 0.5)
-    return round(jumlah_kata * tarif * pengali)
-
-def hitung_total_pr_value(hasil_tampil, tarif_per_kata):
-    return sum(hitung_pr_value(item, tarif_per_kata) for item in hasil_tampil)
 
 # =========================================================
 # SCRAPER PER SUMBER
@@ -1138,6 +1209,195 @@ def scrape_kumparan(tema, max_halaman=3, progress_callback=None):
             })
     return hasil
 
+def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
+    """
+    Tempo.co via POST JSON API (/api/search/articles) -- Nuxt.js frontend,
+    data artikel di-load dari endpoint ini, bukan dari HTML.
+    Filter tanggal pakai unix timestamp UTC: start_date jam 00:00:00,
+    end_date jam 23:59:59. Pagination via offset (kelipatan 20).
+    Ringkasan: ambil dari field summary (array of strings, artikel premium/freemium)
+    atau description (strip HTML tag, semua tipe akses).
+    published_at format ISO 8601 + Z (UTC) -- potong ke 19 char buat strptime,
+    TIDAK perlu .replace(tzinfo=None) karena kita parse manual (bukan fromisoformat).
+    """
+    hasil = []
+    limit = 20
+
+    # Konversi date ke unix timestamp UTC (calendar.timegm pakai UTC, bukan local)
+    unix_mulai = None
+    unix_akhir = None
+    if tanggal_mulai and tanggal_akhir:
+        unix_mulai = int(calendar.timegm(tanggal_mulai.timetuple()))
+        unix_akhir = int(calendar.timegm(tanggal_akhir.timetuple())) + 86399  # +23:59:59
+
+    for p in range(max_halaman):
+        offset = p * limit
+
+        if unix_mulai and unix_akhir:
+            filter_str = (
+                f'unix_published_at >= {unix_mulai} AND unix_published_at <= {unix_akhir}'
+                f' AND domain.domain = "www.tempo.co"'
+            )
+        else:
+            filter_str = 'domain.domain = "www.tempo.co"'
+
+        payload = {
+            "q": tema,
+            "offset": offset,
+            "limit": limit,
+            "attributesToSearchOn": ["title_digital"],
+            "filter": filter_str,
+            "sort": ["unix_published_at:desc"],
+        }
+
+        try:
+            time.sleep(random.uniform(0.8, 1.5))
+            resp = SESSION.post(
+                "https://www.tempo.co/api/search/articles",
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                if progress_callback:
+                    progress_callback(f"⚠️ Tempo: HTTP {resp.status_code} di halaman {p+1}")
+                break
+            data = resp.json()
+        except requests.RequestException as e:
+            if progress_callback:
+                progress_callback(f"⚠️ Tempo: {type(e).__name__} di halaman {p+1}")
+            break
+
+        hits = data.get("hits", [])
+        if not hits:
+            break
+
+        for art in hits:
+            judul = art.get("title_digital")
+            canonical = art.get("canonical_url")
+            if not judul or not canonical:
+                continue
+
+            link = f"https://www.tempo.co/{canonical}"
+
+            # Tanggal: published_at = "2026-06-16T10:34:14Z" -> slice 19 char -> naive datetime
+            tanggal_obj = None
+            tanggal_teks = art.get("published_at") or ""
+            if tanggal_teks:
+                try:
+                    tanggal_obj = datetime.strptime(tanggal_teks[:19], "%Y-%m-%dT%H:%M:%S")
+                except ValueError:
+                    tanggal_obj = parse_tanggal(tanggal_teks)
+
+            # Ringkasan: summary array (artikel berbayar) > description (semua)
+            summary_list = art.get("summary") or []
+            if summary_list:
+                ringkasan_redaksi = " ".join(summary_list)
+            else:
+                desc_html = art.get("description") or ""
+                ringkasan_redaksi = bersihkan_isi_html(desc_html) if desc_html else None
+
+            hasil.append({
+                "sumber": "Tempo.co",
+                "judul": judul,
+                "link": link,
+                "ringkasan_redaksi": ringkasan_redaksi,
+                "tanggal_teks": tanggal_teks,
+                "tanggal": tanggal_obj,
+                "konten": None,
+            })
+
+        # Stop kondisi: offset melebihi total hits atau halaman tidak penuh
+        total_hits = data.get("estimatedTotalHits", 0)
+        if not hits or offset + limit >= total_hits or len(hits) < limit:
+            break
+
+    return hasil
+
+
+def scrape_theconversation(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, progress_callback=None):
+    """
+    The Conversation Indonesia (theconversation.com/id) -- server-side rendered,
+    requests + BeautifulSoup biasa cukup (SSR, bukan JS-rendered).
+    Date filter native via date_from/date_to (format YYYY-MM-DD).
+    Pagination via page=N. Stop kalau 0 artikel ditemukan atau < 10 (halaman terakhir).
+    Konten: artikel akademik/analitis panjang, biasanya berkualitas tinggi untuk
+    topik kebijakan/ekonomi/sosial.
+    """
+    hasil = []
+    base_url = "https://theconversation.com/id/search"
+
+    for p in range(1, max_halaman + 1):
+        params = {
+            "q": tema,
+            "sort": "relevancy",
+            "language": "id",
+        }
+        if tanggal_mulai and tanggal_akhir:
+            params["date"] = "custom"
+            params["date_from"] = tanggal_mulai.strftime("%Y-%m-%d")
+            params["date_to"] = tanggal_akhir.strftime("%Y-%m-%d")
+        if p > 1:
+            params["page"] = p
+
+        url = f"{base_url}?{urlencode(params)}"
+        html = ambil_halaman(url, progress_callback=progress_callback)
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+        artikel_list = soup.select("article.result.published")
+        if not artikel_list:
+            if progress_callback and p == 1:
+                progress_callback(
+                    f"⚠️ The Conversation: 0 artikel cocok selector di halaman {p} "
+                    f"-- struktur HTML mungkin berubah."
+                )
+            break
+
+        for art in artikel_list:
+            judul_tag = art.select_one("h3 a")
+            time_tag = art.select_one("time[datetime]")
+            # Excerpt ada di <p> di dalam article, tapi bukan p.byline
+            desc_tag = art.select_one("div.grid-nine > p:not(.byline)")
+
+            if not judul_tag:
+                continue
+
+            judul = judul_tag.get("title") or judul_tag.get_text(strip=True)
+            href = judul_tag.get("href", "")
+            link = f"https://theconversation.com{href}" if href.startswith("/") else href
+
+            tanggal_obj = None
+            tanggal_teks = None
+            if time_tag:
+                tanggal_teks = time_tag.get_text(strip=True)
+                dt_attr = time_tag.get("datetime", "")
+                if dt_attr:
+                    try:
+                        tanggal_obj = datetime.strptime(dt_attr[:19], "%Y-%m-%dT%H:%M:%S")
+                    except ValueError:
+                        tanggal_obj = parse_tanggal(tanggal_teks)
+
+            ringkasan_redaksi = desc_tag.get_text(strip=True) if desc_tag else None
+
+            if judul and link:
+                hasil.append({
+                    "sumber": "The Conversation",
+                    "judul": judul,
+                    "link": link,
+                    "ringkasan_redaksi": ringkasan_redaksi,
+                    "tanggal_teks": tanggal_teks,
+                    "tanggal": tanggal_obj,
+                    "konten": None,
+                })
+
+        # Halaman terakhir biasanya < 10 hasil
+        if len(artikel_list) < 10:
+            break
+
+    return hasil
+
 SCRAPER_PER_SUMBER = {
     "CNBC Indonesia": scrape_cnbcindonesia,
     "CNN Indonesia": scrape_cnnindonesia,
@@ -1146,8 +1406,10 @@ SCRAPER_PER_SUMBER = {
     "Republika": scrape_republika,
     "Liputan6": scrape_liputan6,
     "Kumparan": scrape_kumparan,
+    "Tempo.co": scrape_tempo,
+    "The Conversation": scrape_theconversation,
 }
-SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6", "CNBC Indonesia"}
+SUMBER_DENGAN_FILTER_TANGGAL_NATIVE = {"Detik", "Republika", "CNN Indonesia", "Liputan6", "CNBC Indonesia", "Tempo.co", "The Conversation"}
 
 # =========================================================
 # AMBIL ISI ARTIKEL (untuk sumber yang gak include konten lengkap di search result)
@@ -1162,6 +1424,11 @@ SELECTOR_KONTEN = {
     # source artikel asli. Lebih stabil drpada class CSS auto-generated
     # styled-components (mis. "c275a64364") yang berubah tiap mereka deploy ulang.
     "kumparan.com": ("main", {"attrs": {"data-qa-id": "article-main"}}),
+    # tempo.co: Nuxt.js SSR, konten artikel ada di div.detail-konten atau article.
+    # best-effort -- API search sudah provide ringkasan, jadi ini hanya fallback.
+    "tempo.co": ("div", {"class_": "detail-konten"}),
+    # theconversation.com: SSR bersih, konten ada di div.article-body
+    "theconversation.com": ("div", {"class_": "article-body"}),
 }
 
 def scrape_isi_artikel(url, progress_callback=None):
@@ -1451,7 +1718,7 @@ def ambil_riwayat_dataframe(watchlist_id, limit=1000):
 # UI STREAMLIT
 # =========================================================
 st.title("📰 Scraper Berita Indonesia")
-st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, Republika, dan Liputan6 berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
+st.caption("Cari berita dari CNBC Indonesia, CNN Indonesia, Detik, Kompas, Republika, Kumparan, Tempo.co, dan The Conversation berdasarkan tema dan rentang tanggal — gratis, tanpa API berbayar.")
 
 with st.sidebar:
     st.header("⚙️ Pengaturan Pencarian")
@@ -1659,27 +1926,68 @@ with tab_cari:
                 )
 
         with sub_dashboard:
-            nss = hitung_nss(hasil_tampil)
-            diversitas = hitung_skor_diversitas_sumber(hasil_tampil)
-            sentimen_list_sc = [item.get("sentimen") for item in hasil_tampil if item.get("sentimen")]
-            sentimen_dominan = Counter(sentimen_list_sc).most_common(1)[0][0] if sentimen_list_sc else "-"
+            # ── Fase 2+3: Score Card Row ──────────────────────────────────────
+            nss_val = hitung_nss(hasil_tampil)
+            div_val = hitung_source_diversity(hasil_tampil)
+            prom_val = hitung_prominence(hasil_tampil, tema)
+            indikator = hitung_konsensus_kontroversi(hasil_tampil)
 
-            col_sc1, col_sc2, col_sc3, col_sc4 = st.columns(4)
-            col_sc1.metric("Total Artikel", len(hasil_tampil))
-            col_sc2.metric("Net Sentiment Score", nss, help="(%Positif − %Negatif). Rentang -100 s/d +100.")
-            col_sc3.metric("Skor Diversitas Sumber", diversitas, help="0-1. Mendekati 1 = liputan tersebar merata antar sumber, bukan terpusat di 1-2 sumber.")
-            col_sc4.metric("Sentimen Dominan", sentimen_dominan)
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            with col_m1:
+                if nss_val is not None:
+                    warna_nss = "normal" if nss_val >= 0 else "inverse"
+                    st.metric(
+                        "Net Sentiment Score",
+                        f"{nss_val:+.1f}",
+                        help="(Positif − Negatif) / Total × 100. Range −100 s/d +100.",
+                        delta_color=warna_nss,
+                    )
+                else:
+                    st.metric("Net Sentiment Score", "—")
+            with col_m2:
+                st.metric(
+                    "Source Diversity",
+                    f"{div_val:.1f}%" if div_val is not None else "—",
+                    help="Shannon entropy dinormalisasi. 100% = distribusi sempurna merata antar sumber.",
+                )
+            with col_m3:
+                st.metric(
+                    "Prominence Score",
+                    f"{prom_val:.1f}%" if prom_val is not None else "—",
+                    help="% artikel di mana tema muncul tepat di judul (bukan cuma di isi).",
+                )
+            with col_m4:
+                tgl_unik = sorted({
+                    item["tanggal"].date() for item in hasil_tampil
+                    if isinstance(item.get("tanggal"), datetime)
+                })
+                rentang_str = (
+                    f"{tgl_unik[0].strftime('%d %b')} – {tgl_unik[-1].strftime('%d %b')}"
+                    if len(tgl_unik) >= 2 else
+                    (tgl_unik[0].strftime('%d %b') if tgl_unik else "—")
+                )
+                st.metric(
+                    "Total Artikel",
+                    len(hasil_tampil),
+                    delta=rentang_str,
+                    help="Total artikel unik yang ditampilkan saat ini.",
+                )
+
+            # ── Fase 3: Indikator Konsensus / Kontroversial ──────────────────
+            if indikator:
+                st.info(
+                    f"{indikator['emoji']} **{indikator['label']}** — {indikator['detail']}",
+                )
+
             st.divider()
 
-            with st.expander("🎭 Daftar Tokoh yang Dipantau"):
-                st.text_area(
-                    "1 tokoh per baris. Alias boleh dipisah koma supaya sebutan informal/parsial "
-                    "tetap ke-tangkep (contoh: Sri Mulyani Indrawati, Sri Mulyani, Menkeu)",
-                    height=100,
-                    key="input_tokoh",
-                )
-            daftar_tokoh = parse_daftar_tokoh(st.session_state.get("input_tokoh", ""))
+            # ── Fase 3: Tren NSS per Hari (interaktif) ───────────────────────
+            fig_nss_trend = buat_chart_nss_trend(hasil_tampil)
+            if fig_nss_trend:
+                st.caption("📈 Tren Net Sentiment Score (NSS) per hari")
+                st.plotly_chart(fig_nss_trend, use_container_width=True)
 
+            # ── Word Cloud + Top Keywords (existing) ─────────────────────────
             wc = buat_wordcloud(hasil_tampil)
             if wc:
                 fig_wc, ax_wc = plt.subplots(figsize=(10, 3.5))
@@ -1700,6 +2008,7 @@ with tab_cari:
 
             st.divider()
 
+            # ── Volume per Sumber & per Hari (existing) ───────────────────────
             df_stat = buat_dataframe_statistik(hasil_tampil)
             col_a, col_b = st.columns(2)
             with col_a:
@@ -1717,6 +2026,13 @@ with tab_cari:
                 else:
                     st.caption("Tanggal tidak terbaca untuk sebagian besar artikel.")
 
+            # ── Fase 3: Profil Bias Sentimen per Sumber ──────────────────────
+            fig_bias = buat_chart_bias_sumber(hasil_tampil)
+            if fig_bias:
+                st.caption("🎯 Profil bias sentimen per sumber (% dari total artikel sumber tsb.)")
+                st.plotly_chart(fig_bias, use_container_width=True)
+
+            # ── Volume × Sentimen Harian (existing) ───────────────────────────
             st.caption("Volume artikel per hari × sentimen")
             fig_vol_sent = buat_chart_volume_sentimen_harian(hasil_tampil)
             if fig_vol_sent:
@@ -1731,6 +2047,16 @@ with tab_cari:
             else:
                 st.caption("Belum ada data sentimen (perlu ambil isi/ringkasan dulu).")
 
+            # ── Leaderboard Tokoh (existing) ──────────────────────────────────
+            with st.expander("🎭 Daftar Tokoh yang Dipantau"):
+                st.text_area(
+                    "1 tokoh per baris. Alias boleh dipisah koma supaya sebutan informal/parsial "
+                    "tetap ke-tangkep (contoh: Sri Mulyani Indrawati, Sri Mulyani, Menkeu)",
+                    height=100,
+                    key="input_tokoh",
+                )
+            daftar_tokoh = parse_daftar_tokoh(st.session_state.get("input_tokoh", ""))
+
             if daftar_tokoh:
                 st.divider()
                 st.caption("🎭 Leaderboard tokoh")
@@ -1742,72 +2068,7 @@ with tab_cari:
                 else:
                     st.caption("Belum ada tokoh dari daftar Anda yang ke-deteksi di hasil ini.")
 
-            st.divider()
-            with st.expander("🎯 Metrik Lanjutan (Prominence, Narrative Resonance, Media Tiering, PR Value)"):
-                st.markdown("**📍 Prominence & Salience Score**")
-                st.caption("Seberapa menonjol posisi kata kunci pencarian di dalam artikel (judul > paragraf awal > isi).")
-                skor_prom = hitung_skor_prominence_agregat(hasil_tampil, tema)
-                st.metric("Skor prominence rata-rata", f"{skor_prom} / 100")
-                st.divider()
-
-                st.markdown("**🎙️ Narrative/Message Resonance**")
-                st.caption(
-                    "Definisikan pilar pesan Anda, 1 baris per pilar, format `Nama Pilar: kata1, kata2, kata3`. "
-                    "Artikel dianggap 'beresonansi' kalau mengandung minimal 1 kata kunci pilar itu."
-                )
-                st.text_area(
-                    "Pilar pesan",
-                    placeholder="Inklusivitas Keuangan: inklusi, akses keuangan, UMKM\nEdukasi Finansial: edukasi, literasi, pelatihan",
-                    height=80,
-                    key="input_pilar_pesan",
-                )
-                daftar_pilar = parse_pilar_pesan(st.session_state.get("input_pilar_pesan", ""))
-                if daftar_pilar:
-                    resonansi = hitung_resonansi_semua_pilar(hasil_tampil, daftar_pilar)
-                    for r in resonansi:
-                        st.write(f"**{r['nama_pilar']}**: {r['jumlah_artikel']} artikel ({r['persentase']}%)")
-                else:
-                    st.caption("Belum ada pilar yang didefinisikan.")
-                st.divider()
-
-                st.markdown("**🏆 Media Tiering & Weighted Reach**")
-                st.caption("Bobot tier per sumber bisa Anda sesuaikan sendiri sesuai strategi/penilaian Anda.")
-                if "bobot_tier" not in st.session_state:
-                    st.session_state.bobot_tier = dict(DEFAULT_BOBOT_TIER)
-                sumber_di_hasil = sorted(set(h["sumber"] for h in hasil_tampil))
-                cols_tier = st.columns(min(len(sumber_di_hasil), 4) or 1)
-                for i, s in enumerate(sumber_di_hasil):
-                    with cols_tier[i % len(cols_tier)]:
-                        st.session_state.bobot_tier[s] = st.number_input(
-                            s, min_value=1, max_value=10,
-                            value=st.session_state.bobot_tier.get(s, 1),
-                            key=f"bobot_tier_{s}",
-                        )
-                impact_scores = hitung_media_impact_score(hasil_tampil, st.session_state.bobot_tier)
-                for entri in sorted(impact_scores, key=lambda x: x["skor_impact"], reverse=True):
-                    st.write(f"**{entri['sumber']}**: {entri['jumlah_artikel']} artikel × bobot {entri['bobot']} = skor impact **{entri['skor_impact']}**")
-                st.divider()
-
-                st.markdown("**💰 PR Value / Ad-Equivalency (AVE)**")
-                st.warning(
-                    "⚠️ AVE adalah estimasi berbasis ASUMSI tarif yang Anda tentukan sendiri di bawah, "
-                    "bukan data resmi/objektif. Metodologi ini juga kontroversial secara akademis "
-                    "(AMEC menentang penggunaannya sebagai metrik PR) -- tetap sering diminta industri "
-                    "Indonesia, jadi disediakan, tapi gunakan dengan kesadaran keterbatasannya."
-                )
-                if "tarif_per_kata" not in st.session_state:
-                    st.session_state.tarif_per_kata = dict(DEFAULT_TARIF_PER_KATA)
-                cols_tarif = st.columns(min(len(sumber_di_hasil), 4) or 1)
-                for i, s in enumerate(sumber_di_hasil):
-                    with cols_tarif[i % len(cols_tarif)]:
-                        st.session_state.tarif_per_kata[s] = st.number_input(
-                            f"{s} (Rp/kata)", min_value=0, max_value=10000,
-                            value=st.session_state.tarif_per_kata.get(s, 300),
-                            step=50, key=f"tarif_{s}",
-                        )
-                total_pr_value = hitung_total_pr_value(hasil_tampil, st.session_state.tarif_per_kata)
-                st.metric("Estimasi total PR Value", f"Rp {total_pr_value:,.0f}".replace(",", "."))
-
+            # ── Liputan Lintas Sumber (existing) ──────────────────────────────
             klaster = st.session_state.get("klaster", [])
             klaster_tampil = [
                 k for k in klaster
