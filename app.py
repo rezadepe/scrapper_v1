@@ -1219,9 +1219,35 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
     atau description (strip HTML tag, semua tipe akses).
     published_at format ISO 8601 + Z (UTC) -- potong ke 19 char buat strptime,
     TIDAK perlu .replace(tzinfo=None) karena kita parse manual (bukan fromisoformat).
+
+    BUGFIX: API Tempo membutuhkan 2 hal yang tidak dimiliki SESSION default:
+    1. Cookie dari Cloudflare + Tempo (di-set saat GET halaman search pertama kali)
+    2. Header XHR yang benar (Sec-Fetch-Mode: cors, bukan navigate) + Origin/Referer
+    Solusi: warm-up GET dulu -> SESSION dapat cookie -> POST dengan header override.
+    Header di-pass langsung ke SESSION.post() sehingga merge+override header SESSION
+    hanya untuk request ini, tanpa mengubah SESSION global (scraper lain aman).
     """
     hasil = []
     limit = 20
+    url_referer = f"https://www.tempo.co/search?q={quote(tema)}"
+
+    # Warm-up GET: buka halaman search Tempo supaya SESSION mendapatkan cookie
+    # Cloudflare (_cfuvid) dan Tempo (browser_id, status_user, dll) sebelum POST.
+    # Tanpa ini, API mengembalikan hits:[] meski HTTP 200.
+    ambil_halaman(url_referer, progress_callback=progress_callback)
+
+    # Header khusus untuk XHR POST -- override header SESSION yang didesain untuk HTML.
+    # Sec-Fetch-* dan Origin/Referer harus sesuai dengan apa yang browser kirim
+    # saat fetch() ke same-origin API endpoint.
+    headers_api = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": "https://www.tempo.co",
+        "Referer": url_referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
 
     # Konversi date ke unix timestamp UTC (calendar.timegm pakai UTC, bukan local)
     unix_mulai = None
@@ -1255,7 +1281,7 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
             resp = SESSION.post(
                 "https://www.tempo.co/api/search/articles",
                 json=payload,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers=headers_api,
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -1270,6 +1296,11 @@ def scrape_tempo(tema, max_halaman=3, tanggal_mulai=None, tanggal_akhir=None, pr
 
         hits = data.get("hits", [])
         if not hits:
+            if progress_callback and p == 0:
+                progress_callback(
+                    f"⚠️ Tempo: API mengembalikan 0 hasil "
+                    f"(estimatedTotalHits={data.get('estimatedTotalHits', '?')})"
+                )
             break
 
         for art in hits:
