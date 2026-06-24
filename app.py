@@ -200,9 +200,10 @@ def ringkas_ekstraktif(teks, jumlah_kalimat=3):
 # =========================================================
 # RINGKASAN AI (GEMINI) -- ON-DEMAND, 1 ARTIKEL PER KLIK (FITUR TERBATAS)
 # =========================================================
-def _panggil_gemini(prompt, api_key, timeout=30):
-    """Helper generik buat panggil Gemini API. Dipakai oleh ringkas_gemini dan
-    bandingkan_sudut_pandang_gemini biar gak duplikasi logic request/response."""
+def _panggil_gemini(prompt, api_key, timeout=30, max_retry=2):
+    """Helper generik buat panggil Gemini API. Retry otomatis max 2x (jeda 3 detik)
+    untuk error 503 (server overloaded). Dipakai oleh ringkas_gemini,
+    bandingkan_sudut_pandang_gemini, dan fungsi PDF report."""
     if not api_key:
         return None, "API key Gemini belum di-set di Streamlit secrets."
 
@@ -210,17 +211,24 @@ def _panggil_gemini(prompt, api_key, timeout=30):
     headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    except requests.exceptions.Timeout:
-        return None, "Request ke Gemini timeout, coba lagi."
-    except requests.exceptions.RequestException as e:
-        return None, f"Gagal menghubungi Gemini: {e}"
+    for attempt in range(max_retry + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        except requests.exceptions.Timeout:
+            return None, "Request ke Gemini timeout, coba lagi."
+        except requests.exceptions.RequestException as e:
+            return None, f"Gagal menghubungi Gemini: {e}"
 
-    if resp.status_code == 429:
-        return None, "Rate limit Gemini tercapai, coba lagi beberapa saat lagi."
-    if resp.status_code != 200:
-        return None, f"Gemini API error (status {resp.status_code})."
+        if resp.status_code == 503:
+            if attempt < max_retry:
+                time.sleep(3)
+                continue
+            return None, "Gemini sedang sibuk (503). Coba generate ulang dalam beberapa saat."
+        if resp.status_code == 429:
+            return None, "Rate limit Gemini tercapai, coba lagi beberapa saat lagi."
+        if resp.status_code != 200:
+            return None, f"Gemini API error (status {resp.status_code})."
+        break  # sukses, keluar dari retry loop
 
     try:
         data = resp.json()
@@ -484,16 +492,20 @@ def hitung_source_diversity(hasil_tampil):
 
 def hitung_prominence(hasil_tampil, tema):
     """
-    Prominence Score: % artikel yang tema muncul tepat di judul (bukan cuma di isi).
-    Makin tinggi = topik jadi headline utama, bukan cuma sebutan sampingan.
+    Prominence Score: % artikel yang minimal 1 kata dari tema muncul di judul.
+    Pakai cek per-kata (bukan frasa penuh) supaya query multi-kata seperti
+    'jokowi psi' tetap ke-deteksi walau kedua kata tidak nempel berurutan di judul.
+    Kata pendek (<3 huruf) diabaikan supaya tidak false-positive.
     """
     if not hasil_tampil or not tema:
         return None
-    tema_lower = tema.lower().strip()
+    kata_tema = [k for k in tema.lower().strip().split() if len(k) >= 3]
+    if not kata_tema:
+        return None
     total = len(hasil_tampil)
     muncul_di_judul = sum(
         1 for item in hasil_tampil
-        if tema_lower in (item.get("judul") or "").lower()
+        if any(k in (item.get("judul") or "").lower() for k in kata_tema)
     )
     return round(muncul_di_judul / total * 100, 1) if total else None
 
