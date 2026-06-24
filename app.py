@@ -1470,34 +1470,57 @@ SELECTOR_KONTEN = {
 }
 
 def scrape_isi_artikel(url, progress_callback=None):
+    # ── Special case: Tempo.co ────────────────────────────────────────────────
+    # Masalah 1: SESSION global punya HTML-scraping headers yang membuat
+    # Cloudflare Tempo return halaman berbeda (tanpa div#content-wrapper).
+    # Solusi: fresh session minimal, persis seperti Colab yang terbukti berhasil.
+    # Masalah 2: isi artikel terpecah di banyak div#content-wrapper (bukan
+    # satu container tunggal). Wrapper dengan class paywall-content berisi
+    # "Pilihan Editor:" -- di-skip, bukan isi artikel.
+    if "tempo.co" in url:
+        sesi_artikel = requests.Session()
+        sesi_artikel.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/149.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        })
+        try:
+            time.sleep(random.uniform(0.8, 1.5))
+            resp = sesi_artikel.get(url, timeout=15)
+            if resp.status_code != 200:
+                return f"Gagal mengambil halaman (HTTP {resp.status_code})"
+            html = resp.text
+        except requests.RequestException as e:
+            return f"Gagal mengambil halaman ({type(e).__name__})"
+
+        soup = BeautifulSoup(html, "html.parser")
+        wrappers = soup.find_all("div", id="content-wrapper")
+        teks_list = []
+        for w in wrappers:
+            # Skip wrapper paywall -- berisi "Pilihan Editor:" bukan isi artikel
+            if "paywall-content" in (w.get("class") or []):
+                continue
+            teks = w.get_text(separator=" ", strip=True)
+            if teks:
+                teks_list.append(teks)
+
+        if not teks_list:
+            return "Konten tidak ditemukan"
+
+        isi = " ".join(teks_list)
+        # Bersihkan sisa noise "Pilihan Editor: ..." kalau masih ada
+        isi = re.sub(r'Pilihan Editor\s*:?\s*[^.!?]*[.!?]?', '', isi, flags=re.IGNORECASE)
+        isi = re.sub(r'\s{2,}', ' ', isi).strip()
+        return isi if isi else "Konten tidak ditemukan"
+
+    # ── Generic selector untuk sumber lain ────────────────────────────────────
     html = ambil_halaman(url, progress_callback=progress_callback)
     if not html:
         return "Gagal mengambil halaman"
     soup = BeautifulSoup(html, "html.parser")
-
-    # ── Special case: Tempo.co ────────────────────────────────────────────────
-    # Isi artikel tidak dalam satu container tunggal. Tempo memecah artikel jadi
-    # banyak potongan, masing-masing di div#content-wrapper (muncul 20+ kali per
-    # halaman). Div lain (iklan, "BACA JUGA", paywall) tidak pakai id ini, jadi
-    # cukup ambil semua div#content-wrapper dan gabungkan teksnya.
-    # Noise tambahan: "Pilihan Editor: <judul>" disisipkan di tengah artikel --
-    # dibersihkan via regex setelah teks digabung.
-    if "tempo.co" in url:
-        wrappers = soup.find_all("div", id="content-wrapper")
-        if wrappers:
-            teks_list = []
-            for w in wrappers:
-                teks = w.get_text(separator=" ", strip=True)
-                if teks:
-                    teks_list.append(teks)
-            isi = " ".join(teks_list)
-            # Bersihkan noise "Pilihan Editor: <judul artikel lain>"
-            isi = re.sub(r'Pilihan Editor\s*:?\s*[^.!?]*[.!?]?', '', isi, flags=re.IGNORECASE)
-            isi = re.sub(r'\s{2,}', ' ', isi).strip()
-            return isi if isi else "Konten tidak ditemukan"
-        return "Konten tidak ditemukan (div#content-wrapper tidak ada)"
-
-    # ── Generic selector untuk sumber lain ────────────────────────────────────
     domain_cocok = next((d for d in SELECTOR_KONTEN if d in url), None)
     if domain_cocok:
         tag, attrs = SELECTOR_KONTEN[domain_cocok]
