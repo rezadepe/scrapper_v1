@@ -29,6 +29,17 @@ import math
 import calendar
 from supabase import create_client
 
+# PDF generation
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    PageBreak, HRFlowable, Image as RLImage,
+)
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
 # =========================================================
 # KONFIGURASI HALAMAN
 # =========================================================
@@ -624,6 +635,565 @@ def buat_chart_bias_sumber(hasil_tampil):
         height=300,
     )
     return fig
+
+# =========================================================
+# FASE 5 — PDF REPORT GENERATION
+# Arsitektur: Hierarchical Summarization
+#   Layer 1: ringkas_ekstraktif() per artikel (sudah ada, gratis)
+#   Layer 2: Gemini per cluster/kelompok sumber (~5-15 artikel per call)
+#   Layer 3: Gemini meta-synthesis: gabung semua layer 2 + metrik → executive summary
+# =========================================================
+
+PDF_MAX_ARTIKEL = 30  # Batas auto-select artikel untuk report
+
+def auto_pilih_artikel(hasil_tampil, max_artikel=PDF_MAX_ARTIKEL):
+    """
+    Auto-select top-N artikel berdasarkan skor relevansi komposit:
+    - Punya konten lengkap (+3)
+    - Tema muncul di judul (+2)
+    - Sentimen ekstrem (positif/negatif, bukan netral) (+1)
+    - Sumber unik bonus: prioritaskan diversitas sumber
+    Return list index artikel yang dipilih (index di hasil_tampil).
+    """
+    if len(hasil_tampil) <= max_artikel:
+        return list(range(len(hasil_tampil)))
+
+    skor = []
+    for i, item in enumerate(hasil_tampil):
+        s = 0
+        konten = item.get("konten", "")
+        if konten and konten not in KONTEN_INVALID and len(konten) > 100:
+            s += 3
+        judul = (item.get("judul") or "").lower()
+        # tema tidak tersedia di sini, pakai heuristic: judul panjang = lebih informatif
+        if len(judul) > 30:
+            s += 1
+        if item.get("sentimen") in ("Positif", "Negatif"):
+            s += 1
+        skor.append((s, i))
+
+    # Sort by skor desc, tapi pastikan distribusi sumber merata
+    skor.sort(key=lambda x: x[0], reverse=True)
+    dipilih = []
+    sumber_count = {}
+    # Ambil max 5 per sumber supaya tidak dominan satu sumber
+    for _, idx in skor:
+        sumber = hasil_tampil[idx].get("sumber", "")
+        if sumber_count.get(sumber, 0) < 5:
+            dipilih.append(idx)
+            sumber_count[sumber] = sumber_count.get(sumber, 0) + 1
+        if len(dipilih) >= max_artikel:
+            break
+
+    return sorted(dipilih)
+
+
+def _buat_prompt_cluster(artikel_list, bahasa="Indonesia"):
+    """Buat prompt Layer 2: analisis narasi per cluster/sumber."""
+    lang_instruction = (
+        "Respond in formal Bahasa Indonesia." if bahasa == "Indonesia"
+        else "Respond in formal English."
+    )
+    bagian = []
+    for i, art in enumerate(artikel_list, 1):
+        ringkasan = (
+            art.get("ringkasan")
+            or art.get("ringkasan_redaksi")
+            or art.get("judul", "")
+        )[:600]
+        bagian.append(
+            f"Artikel {i} [{art.get('sumber','')}]: {art.get('judul','')}\n"
+            f"Ringkasan: {ringkasan}"
+        )
+    konten_gabung = "\n\n".join(bagian)
+
+    return (
+        f"Kamu adalah analis media PR profesional. {lang_instruction}\n"
+        f"Berikut {len(artikel_list)} artikel berita tentang topik yang sama.\n\n"
+        f"{konten_gabung}\n\n"
+        f"Analisis dalam format JSON (tanpa markdown fence, hanya JSON murni):\n"
+        f'{{"narrative": "narasi/framing dominan 1 paragraf", '
+        f'"key_facts": ["fakta 1", "fakta 2", "fakta 3"], '
+        f'"tone": "positif/negatif/netral/campuran", '
+        f'"notable_angle": "angle unik atau berbeda jika ada, atau null"}}\n'
+        f"Maksimal 200 kata total. Bahasa formal."
+    )
+
+
+def _buat_prompt_executive(tema, tgl_mulai, tgl_akhir, metrik, cluster_summaries, bahasa="Indonesia"):
+    """Buat prompt Layer 3: executive summary dari hasil cluster summaries."""
+    lang_instruction = (
+        "Tulis dalam Bahasa Indonesia formal." if bahasa == "Indonesia"
+        else "Write in formal English."
+    )
+    metrik_str = (
+        f"- Total artikel: {metrik['total']}\n"
+        f"- Net Sentiment Score (NSS): {metrik['nss']}\n"
+        f"- Share of Voice: {metrik['sov']}\n"
+        f"- Prominence Score: {metrik['prominence']}%\n"
+        f"- Indikator: {metrik['indikator']}"
+    )
+    cluster_str = "\n\n".join(
+        f"Kelompok {i+1}: {s}" for i, s in enumerate(cluster_summaries)
+    )
+    return (
+        f"Kamu adalah konsultan PR senior. {lang_instruction}\n\n"
+        f"TOPIK: {tema}\n"
+        f"PERIODE: {tgl_mulai} s/d {tgl_akhir}\n\n"
+        f"METRIK:\n{metrik_str}\n\n"
+        f"RINGKASAN PER KELOMPOK PEMBERITAAN:\n{cluster_str}\n\n"
+        f"Tulis Executive Summary dalam 4 paragraf:\n"
+        f"1. Gambaran umum lanskap pemberitaan\n"
+        f"2. Tren sentimen dan apa yang mendorongnya\n"
+        f"3. Dinamika antar media (siapa paling aktif, perbedaan framing)\n"
+        f"4. Implikasi dan hal yang perlu diwaspadai\n\n"
+        f"Tidak lebih dari 350 kata. Jangan gunakan bullet point."
+    )
+
+
+def generate_cluster_summaries(artikel_dipilih, api_key, bahasa="Indonesia", progress_callback=None):
+    """
+    Layer 2: Bagi artikel ke cluster per sumber, panggil Gemini per cluster.
+    Return list of (cluster_label, summary_text). Cluster yang gagal di-skip.
+    """
+    # Kelompokkan per sumber
+    per_sumber = {}
+    for item in artikel_dipilih:
+        sumber = item.get("sumber", "Lainnya")
+        per_sumber.setdefault(sumber, []).append(item)
+
+    summaries = []
+    total = len(per_sumber)
+    for idx, (sumber, arts) in enumerate(per_sumber.items(), 1):
+        if progress_callback:
+            progress_callback(f"Menganalisis liputan {sumber} ({idx}/{total})...")
+        prompt = _buat_prompt_cluster(arts, bahasa)
+        hasil, error = _panggil_gemini(prompt, api_key, timeout=45)
+        if not hasil:
+            summaries.append((sumber, f"[Analisis tidak tersedia: {error}]"))
+            continue
+        # Parse JSON — kalau gagal, pakai raw text
+        try:
+            clean = hasil.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            data = json.loads(clean)
+            ringkas = (
+                f"Narasi: {data.get('narrative','')}\n"
+                f"Fakta utama: {'; '.join(data.get('key_facts',[]))}\n"
+                f"Nada: {data.get('tone','')}\n"
+                f"Angle khusus: {data.get('notable_angle') or '-'}"
+            )
+            summaries.append((sumber, ringkas))
+        except (json.JSONDecodeError, AttributeError):
+            summaries.append((sumber, hasil[:500]))
+
+    return summaries
+
+
+def generate_executive_summary(tema, tgl_mulai, tgl_akhir, metrik, cluster_summaries, api_key, bahasa="Indonesia"):
+    """Layer 3: Executive summary dari hasil cluster summaries + metrik."""
+    cluster_texts = [f"{label}:\n{text}" for label, text in cluster_summaries]
+    prompt = _buat_prompt_executive(tema, tgl_mulai, tgl_akhir, metrik, cluster_texts, bahasa)
+    return _panggil_gemini(prompt, api_key, timeout=60)
+
+
+def _export_chart_png(fig, lebar=500, tinggi=220):
+    """Export Plotly figure ke bytes PNG untuk di-embed di PDF."""
+    try:
+        return fig.to_image(format="png", width=lebar, height=tinggi, scale=2)
+    except Exception:
+        return None
+
+
+def buat_pdf_report(
+    tema, tgl_mulai, tgl_akhir,
+    hasil_tampil, artikel_dipilih,
+    executive_summary, cluster_summaries,
+    metrik, bahasa="Indonesia"
+):
+    """
+    Generate PDF bytes menggunakan ReportLab.
+    Struktur:
+      Hal 1: Cover
+      Hal 2: Executive Summary
+      Hal 3: Key Metrics + Charts
+      Hal 4+: Cluster Analysis (per sumber)
+      Hal terakhir: Article Index (tabel clickable) + Metodologi
+    """
+    buffer = io.BytesIO()
+    PAGE_W, PAGE_H = A4
+    MARGIN = 2 * cm
+
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=MARGIN, bottomMargin=MARGIN,
+        title=f"Media Intelligence Report — {tema}",
+    )
+
+    # ── Styles ────────────────────────────────────────────────────────────────
+    styles = getSampleStyleSheet()
+    st_cover_title = ParagraphStyle(
+        "CoverTitle", parent=styles["Title"],
+        fontSize=26, leading=32, spaceAfter=8, alignment=TA_CENTER,
+        textColor=colors.HexColor("#1A2E4A"),
+    )
+    st_cover_sub = ParagraphStyle(
+        "CoverSub", parent=styles["Normal"],
+        fontSize=12, leading=16, alignment=TA_CENTER,
+        textColor=colors.HexColor("#555555"),
+    )
+    st_cover_meta = ParagraphStyle(
+        "CoverMeta", parent=styles["Normal"],
+        fontSize=10, leading=14, alignment=TA_CENTER,
+        textColor=colors.HexColor("#888888"),
+    )
+    st_h1 = ParagraphStyle(
+        "H1", parent=styles["Heading1"],
+        fontSize=16, leading=20, spaceBefore=12, spaceAfter=6,
+        textColor=colors.HexColor("#1A2E4A"),
+    )
+    st_h2 = ParagraphStyle(
+        "H2", parent=styles["Heading2"],
+        fontSize=12, leading=16, spaceBefore=8, spaceAfter=4,
+        textColor=colors.HexColor("#378ADD"),
+    )
+    st_body = ParagraphStyle(
+        "Body", parent=styles["Normal"],
+        fontSize=10, leading=14, spaceAfter=6,
+        textColor=colors.HexColor("#333333"),
+    )
+    st_caption = ParagraphStyle(
+        "Caption", parent=styles["Normal"],
+        fontSize=8, leading=11, spaceAfter=4,
+        textColor=colors.HexColor("#777777"), alignment=TA_CENTER,
+    )
+    st_label = ParagraphStyle(
+        "Label", parent=styles["Normal"],
+        fontSize=9, leading=12,
+        textColor=colors.HexColor("#555555"),
+    )
+    st_metric_val = ParagraphStyle(
+        "MetricVal", parent=styles["Normal"],
+        fontSize=20, leading=24, alignment=TA_CENTER,
+        textColor=colors.HexColor("#1A2E4A"),
+    )
+    st_metric_lbl = ParagraphStyle(
+        "MetricLbl", parent=styles["Normal"],
+        fontSize=8, leading=10, alignment=TA_CENTER,
+        textColor=colors.HexColor("#888888"),
+    )
+    st_link = ParagraphStyle(
+        "Link", parent=styles["Normal"],
+        fontSize=8, leading=11,
+        textColor=colors.HexColor("#378ADD"),
+    )
+
+    story = []
+
+    # ── HALAMAN 1: COVER ──────────────────────────────────────────────────────
+    story.append(Spacer(1, 3 * cm))
+    story.append(Paragraph("📰 Media Intelligence Report", st_cover_title))
+    story.append(Spacer(1, 0.5 * cm))
+
+    story.append(HRFlowable(
+        width="80%", thickness=2,
+        color=colors.HexColor("#378ADD"),
+        hAlign="CENTER", spaceAfter=16,
+    ))
+
+    story.append(Paragraph(f"<b>{tema.upper()}</b>", ParagraphStyle(
+        "TopikBesar", parent=st_cover_sub,
+        fontSize=18, leading=22, spaceAfter=12,
+        textColor=colors.HexColor("#1A2E4A"),
+    )))
+
+    periode = (
+        f"{tgl_mulai.strftime('%d %B %Y') if hasattr(tgl_mulai,'strftime') else tgl_mulai}"
+        f" — "
+        f"{tgl_akhir.strftime('%d %B %Y') if hasattr(tgl_akhir,'strftime') else tgl_akhir}"
+    )
+    story.append(Paragraph(f"Periode: {periode}", st_cover_sub))
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(Paragraph(
+        f"Dibuat: {datetime.now().strftime('%d %B %Y, %H:%M WIB')}",
+        st_cover_meta,
+    ))
+    story.append(Spacer(1, 0.2 * cm))
+    lang_label = "Bahasa Indonesia" if bahasa == "Indonesia" else "English"
+    story.append(Paragraph(f"Bahasa laporan: {lang_label}", st_cover_meta))
+    story.append(Spacer(1, 1 * cm))
+
+    story.append(HRFlowable(
+        width="80%", thickness=1,
+        color=colors.HexColor("#DDDDDD"),
+        hAlign="CENTER", spaceAfter=8,
+    ))
+    story.append(Paragraph(
+        "Scraper Berita Indonesia · Media Intelligence Dashboard",
+        st_cover_meta,
+    ))
+
+    story.append(PageBreak())
+
+    # ── HALAMAN 2: EXECUTIVE SUMMARY ─────────────────────────────────────────
+    story.append(Paragraph(
+        "Executive Summary" if bahasa == "English" else "Ringkasan Eksekutif",
+        st_h1,
+    ))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#378ADD"), spaceAfter=10))
+
+    if executive_summary:
+        for para in executive_summary.split("\n"):
+            para = para.strip()
+            if para:
+                story.append(Paragraph(para, st_body))
+    else:
+        story.append(Paragraph("Executive summary tidak tersedia.", st_body))
+
+    story.append(PageBreak())
+
+    # ── HALAMAN 3: KEY METRICS ────────────────────────────────────────────────
+    story.append(Paragraph(
+        "Key Metrics" if bahasa == "English" else "Metrik Utama",
+        st_h1,
+    ))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#378ADD"), spaceAfter=10))
+
+    # Metric cards: 4 kolom tabel
+    nss_str = f"{metrik['nss']:+.1f}" if metrik['nss'] is not None else "—"
+    div_str = f"{metrik['diversity']:.1f}%" if metrik['diversity'] is not None else "—"
+    prom_str = f"{metrik['prominence']:.1f}%" if metrik['prominence'] is not None else "—"
+    total_str = str(metrik['total'])
+
+    metric_data = [
+        [
+            Paragraph(nss_str, st_metric_val),
+            Paragraph(div_str, st_metric_val),
+            Paragraph(prom_str, st_metric_val),
+            Paragraph(total_str, st_metric_val),
+        ],
+        [
+            Paragraph("Net Sentiment Score", st_metric_lbl),
+            Paragraph("Source Diversity", st_metric_lbl),
+            Paragraph("Prominence Score", st_metric_lbl),
+            Paragraph("Total Artikel", st_metric_lbl),
+        ],
+    ]
+    col_w = (PAGE_W - 2 * MARGIN) / 4
+    metric_table = Table(metric_data, colWidths=[col_w] * 4, rowHeights=[32, 18])
+    metric_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F7FB")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
+    ]))
+    story.append(metric_table)
+    story.append(Spacer(1, 0.4 * cm))
+
+    # Indikator konsensus
+    if metrik.get("indikator"):
+        ind = metrik["indikator"]
+        story.append(Paragraph(
+            f"{ind['emoji']} <b>{ind['label']}</b> — {ind['detail']}",
+            st_body,
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+
+    # SoV tabel
+    story.append(Paragraph(
+        "Share of Voice per Sumber" if bahasa == "Indonesia" else "Share of Voice by Source",
+        st_h2,
+    ))
+    sov_data = metrik.get("sov_data", [])
+    if sov_data:
+        sov_table_data = [
+            [
+                Paragraph("<b>Sumber</b>", st_label),
+                Paragraph("<b>Artikel</b>", st_label),
+                Paragraph("<b>SoV %</b>", st_label),
+                Paragraph("<b>Sentimen Dominan</b>", st_label),
+            ]
+        ]
+        for row in sov_data:
+            sov_table_data.append([
+                Paragraph(str(row["sumber"]), st_label),
+                Paragraph(str(row["jumlah"]), st_label),
+                Paragraph(f"{row['pct']:.1f}%", st_label),
+                Paragraph(str(row["sentimen_dominan"]), st_label),
+            ])
+        sov_table = Table(
+            sov_table_data,
+            colWidths=[(PAGE_W - 2 * MARGIN) * x for x in [0.35, 0.15, 0.15, 0.35]],
+        )
+        sov_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1A2E4A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F7FB")]),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(sov_table)
+
+    # Chart NSS Trend (embed PNG)
+    if metrik.get("fig_nss"):
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph(
+            "Tren Net Sentiment Score (NSS) Harian" if bahasa == "Indonesia"
+            else "Daily NSS Trend",
+            st_h2,
+        ))
+        png_bytes = _export_chart_png(metrik["fig_nss"], lebar=520, tinggi=200)
+        if png_bytes:
+            img = RLImage(io.BytesIO(png_bytes), width=16 * cm, height=6 * cm)
+            story.append(img)
+            story.append(Paragraph(
+                "NSS = (Positif − Negatif) / Total × 100. Range −100 s/d +100.",
+                st_caption,
+            ))
+
+    story.append(PageBreak())
+
+    # ── HALAMAN 4+: CLUSTER ANALYSIS ─────────────────────────────────────────
+    story.append(Paragraph(
+        "Analisis per Sumber Media" if bahasa == "Indonesia" else "Analysis by Media Source",
+        st_h1,
+    ))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#378ADD"), spaceAfter=10))
+
+    for sumber, summary_text in cluster_summaries:
+        story.append(Paragraph(sumber, st_h2))
+        for baris in summary_text.split("\n"):
+            baris = baris.strip()
+            if baris:
+                story.append(Paragraph(baris, st_body))
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(HRFlowable(
+            width="100%", thickness=0.5,
+            color=colors.HexColor("#EEEEEE"), spaceAfter=6,
+        ))
+
+    story.append(PageBreak())
+
+    # ── HALAMAN TERAKHIR: ARTICLE INDEX ──────────────────────────────────────
+    story.append(Paragraph(
+        "Indeks Artikel" if bahasa == "Indonesia" else "Article Index",
+        st_h1,
+    ))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#378ADD"), spaceAfter=10))
+
+    story.append(Paragraph(
+        f"Total {len(artikel_dipilih)} artikel dianalisis dalam laporan ini.",
+        st_body,
+    ))
+    story.append(Spacer(1, 0.2 * cm))
+
+    idx_data = [[
+        Paragraph("<b>#</b>", st_label),
+        Paragraph("<b>Judul</b>", st_label),
+        Paragraph("<b>Sumber</b>", st_label),
+        Paragraph("<b>Tanggal</b>", st_label),
+        Paragraph("<b>Sentimen</b>", st_label),
+    ]]
+    for i, art in enumerate(artikel_dipilih, 1):
+        tgl_art = art.get("tanggal")
+        tgl_str = tgl_art.strftime("%d/%m/%y") if isinstance(tgl_art, datetime) else (art.get("tanggal_teks", "")[:10])
+        judul = art.get("judul", "")[:80]
+        link = art.get("link", "")
+        sent = art.get("sentimen", "—")
+        sent_color = {"Positif": "#1D9E75", "Negatif": "#D85A30"}.get(sent, "#888780")
+
+        judul_cell = (
+            Paragraph(f'<a href="{link}" color="#378ADD">{judul}</a>', st_link)
+            if link else Paragraph(judul, st_label)
+        )
+        idx_data.append([
+            Paragraph(str(i), st_label),
+            judul_cell,
+            Paragraph(art.get("sumber", ""), st_label),
+            Paragraph(tgl_str, st_label),
+            Paragraph(f'<font color="{sent_color}">{sent}</font>', st_label),
+        ])
+
+    idx_table = Table(
+        idx_data,
+        colWidths=[(PAGE_W - 2 * MARGIN) * x for x in [0.05, 0.45, 0.20, 0.13, 0.17]],
+        repeatRows=1,
+    )
+    idx_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1A2E4A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F7FB")]),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(idx_table)
+
+    # Metodologi singkat
+    story.append(Spacer(1, 0.8 * cm))
+    story.append(Paragraph(
+        "Catatan Metodologi" if bahasa == "Indonesia" else "Methodology Notes",
+        st_h2,
+    ))
+    metode_data = [
+        [Paragraph("<b>Metrik</b>", st_label), Paragraph("<b>Cara Hitung</b>", st_label)],
+        [Paragraph("NSS", st_label), Paragraph("(Positif − Negatif) / Total × 100. Range −100 s/d +100.", st_label)],
+        [Paragraph("Share of Voice", st_label), Paragraph("% artikel per sumber dari total artikel.", st_label)],
+        [Paragraph("Prominence Score", st_label), Paragraph("% artikel di mana tema muncul di judul.", st_label)],
+        [Paragraph("Source Diversity", st_label), Paragraph("Shannon entropy dinormalisasi (0–100%). 100% = distribusi merata.", st_label)],
+        [Paragraph("Sentimen", st_label), Paragraph("Lexicon-based (kata positif/negatif + negasi + penguat). Estimasi kasar.", st_label)],
+        [Paragraph("Executive Summary", st_label), Paragraph("Dihasilkan oleh Gemini AI berdasarkan ringkasan artikel pilihan.", st_label)],
+    ]
+    metode_table = Table(
+        metode_data,
+        colWidths=[(PAGE_W - 2 * MARGIN) * x for x in [0.25, 0.75]],
+    )
+    metode_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1A2E4A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F7FB")]),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(metode_table)
+
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def hitung_sov_data(hasil_tampil):
+    """Hitung Share of Voice per sumber lengkap dengan sentimen dominan."""
+    if not hasil_tampil:
+        return []
+    total = len(hasil_tampil)
+    per_sumber = {}
+    for item in hasil_tampil:
+        s = item.get("sumber", "Lainnya")
+        per_sumber.setdefault(s, []).append(item.get("sentimen", "Netral"))
+
+    hasil = []
+    for sumber, sentimen_list in per_sumber.items():
+        jumlah = len(sentimen_list)
+        cnt = Counter(sentimen_list)
+        dominan = cnt.most_common(1)[0][0] if cnt else "Netral"
+        hasil.append({
+            "sumber": sumber,
+            "jumlah": jumlah,
+            "pct": round(jumlah / total * 100, 1),
+            "sentimen_dominan": dominan,
+        })
+    return sorted(hasil, key=lambda x: x["jumlah"], reverse=True)
+
 
 # =========================================================
 # SENTIMENT TAGGING -- LEXICON-BASED SEDERHANA
@@ -1923,12 +2493,59 @@ with tab_cari:
         st.subheader(f"Hasil: {len(hasil)} artikel")
 
         sumber_unik = sorted(set(h["sumber"] for h in hasil))
-        filter_tampil = st.multiselect("Tampilkan sumber:", sumber_unik, default=sumber_unik)
-        hasil_tampil = [h for h in hasil if h["sumber"] in filter_tampil]
 
         sub_artikel, sub_dashboard = st.tabs(["📰 Daftar Artikel", "📊 Dashboard Analitik"])
 
         with sub_artikel:
+            # ── Panel Filter & Sort ───────────────────────────────────────────
+            with st.container():
+                col_sort, col_sent, col_src = st.columns([1, 1, 2])
+                with col_sort:
+                    sort_by = st.selectbox(
+                        "Urutkan",
+                        ["Tanggal (terbaru)", "Tanggal (terlama)", "Sentimen (positif dulu)", "Sentimen (negatif dulu)", "Sumber (A–Z)"],
+                        label_visibility="collapsed",
+                    )
+                with col_sent:
+                    filter_sentimen = st.multiselect(
+                        "Sentimen",
+                        ["Positif", "Netral", "Negatif"],
+                        default=["Positif", "Netral", "Negatif"],
+                        placeholder="Semua sentimen",
+                        label_visibility="collapsed",
+                    )
+                with col_src:
+                    filter_sumber = st.multiselect(
+                        "Sumber",
+                        sumber_unik,
+                        default=sumber_unik,
+                        placeholder="Semua sumber",
+                        label_visibility="collapsed",
+                    )
+
+            # Terapkan filter
+            hasil_tampil = [
+                h for h in hasil
+                if h["sumber"] in (filter_sumber or sumber_unik)
+                and h.get("sentimen", "Netral") in (filter_sentimen or ["Positif", "Netral", "Negatif"])
+            ]
+
+            # Terapkan sort
+            _URUT_SENT = {"Positif": 0, "Netral": 1, "Negatif": 2}
+            if sort_by == "Tanggal (terbaru)":
+                hasil_tampil.sort(key=lambda x: x.get("tanggal") or datetime.min, reverse=True)
+            elif sort_by == "Tanggal (terlama)":
+                hasil_tampil.sort(key=lambda x: x.get("tanggal") or datetime.min)
+            elif sort_by == "Sentimen (positif dulu)":
+                hasil_tampil.sort(key=lambda x: _URUT_SENT.get(x.get("sentimen", "Netral"), 1))
+            elif sort_by == "Sentimen (negatif dulu)":
+                hasil_tampil.sort(key=lambda x: _URUT_SENT.get(x.get("sentimen", "Netral"), 1), reverse=True)
+            elif sort_by == "Sumber (A–Z)":
+                hasil_tampil.sort(key=lambda x: x.get("sumber", ""))
+
+            st.caption(f"Menampilkan {len(hasil_tampil)} dari {len(hasil)} artikel")
+            st.divider()
+
             for item in hasil_tampil:
                 tgl_str = item["tanggal"].strftime("%d %B %Y") if item.get("tanggal") else (item.get("tanggal_teks") or "Tanggal tidak diketahui")
                 with st.expander(f"📌 {item['judul']}  —  {item['sumber']} ({tgl_str})"):
@@ -2189,6 +2806,165 @@ with tab_cari:
                                 else:
                                     st.error(f"Gagal membandingkan: {error}")
                     st.divider()
+
+            # ── FASE 5: Generate PDF Report ───────────────────────────────────
+            st.divider()
+            if not GEMINI_API_KEY:
+                st.caption("📄 Fitur PDF Report belum dikonfigurasi developer.")
+            elif not st.session_state.get("ai_unlocked", False):
+                st.caption("🔒 **PDF Report** terkunci. Masukkan password di sidebar untuk mengaktifkan.")
+            elif not ambil_konten:
+                st.warning(
+                    "📄 **Generate PDF Report** membutuhkan isi lengkap artikel. "
+                    "Aktifkan opsi **'Ambil isi lengkap artikel'** di Pengaturan Lanjutan lalu cari ulang."
+                )
+            else:
+                st.subheader("📄 Generate PDF Report")
+
+                with st.expander("⚙️ Konfigurasi Report", expanded=True):
+                    col_lang, col_info = st.columns([1, 2])
+                    with col_lang:
+                        bahasa_pdf = st.selectbox(
+                            "Bahasa laporan",
+                            ["Indonesia", "English"],
+                            key="bahasa_pdf",
+                        )
+                    with col_info:
+                        total_art = len(hasil_tampil)
+                        if total_art > PDF_MAX_ARTIKEL:
+                            st.info(
+                                f"Ada **{total_art} artikel** — sistem akan otomatis memilih "
+                                f"**{PDF_MAX_ARTIKEL} terbaik** berdasarkan relevansi & diversitas sumber. "
+                                f"Anda bisa deselect artikel di bawah."
+                            )
+                        else:
+                            st.success(f"Semua **{total_art} artikel** akan dimasukkan ke report.")
+
+                    # Auto-select artikel
+                    indeks_auto = auto_pilih_artikel(hasil_tampil, PDF_MAX_ARTIKEL)
+                    opsi_artikel = {
+                        f"[{item.get('sumber','')}] {item.get('judul','')[:70]}": i
+                        for i, item in enumerate(hasil_tampil)
+                    }
+                    opsi_dipilih_default = [
+                        label for label, idx in opsi_artikel.items()
+                        if idx in indeks_auto
+                    ]
+                    artikel_terpilih_label = st.multiselect(
+                        f"Artikel yang masuk report (maks {PDF_MAX_ARTIKEL})",
+                        options=list(opsi_artikel.keys()),
+                        default=opsi_dipilih_default,
+                        key="pdf_artikel_select",
+                    )
+                    artikel_dipilih_final = [
+                        hasil_tampil[opsi_artikel[label]]
+                        for label in artikel_terpilih_label
+                        if label in opsi_artikel
+                    ]
+
+                    if len(artikel_dipilih_final) > PDF_MAX_ARTIKEL:
+                        st.warning(f"Terlalu banyak artikel dipilih. Maksimal {PDF_MAX_ARTIKEL}. Silakan deselect beberapa.")
+                        artikel_dipilih_final = artikel_dipilih_final[:PDF_MAX_ARTIKEL]
+
+                if artikel_dipilih_final and st.button(
+                    f"🚀 Generate & Download PDF ({len(artikel_dipilih_final)} artikel)",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_generate_pdf",
+                ):
+                    progress_pdf = st.empty()
+                    error_pdf = None
+                    pdf_bytes = None
+
+                    def _pdf_progress(msg):
+                        progress_pdf.info(f"⏳ {msg}")
+
+                    try:
+                        # Layer 2: cluster summaries
+                        _pdf_progress("Menganalisis narasi per sumber media...")
+                        cluster_sums = generate_cluster_summaries(
+                            artikel_dipilih_final, GEMINI_API_KEY,
+                            bahasa=bahasa_pdf,
+                            progress_callback=_pdf_progress,
+                        )
+
+                        # Hitung metrik untuk PDF
+                        nss_pdf = hitung_nss(artikel_dipilih_final)
+                        div_pdf = hitung_source_diversity(artikel_dipilih_final)
+                        prom_pdf = hitung_prominence(artikel_dipilih_final, tema)
+                        ind_pdf = hitung_konsensus_kontroversi(artikel_dipilih_final)
+                        sov_pdf = hitung_sov_data(artikel_dipilih_final)
+                        fig_nss_pdf = buat_chart_nss_trend(artikel_dipilih_final)
+
+                        metrik_pdf = {
+                            "total": len(artikel_dipilih_final),
+                            "nss": nss_pdf,
+                            "diversity": div_pdf,
+                            "prominence": prom_pdf,
+                            "indikator": ind_pdf,
+                            "sov": ", ".join(f"{r['sumber']} {r['pct']:.0f}%" for r in sov_pdf[:5]),
+                            "sov_data": sov_pdf,
+                            "fig_nss": fig_nss_pdf,
+                        }
+
+                        # Layer 3: executive summary
+                        _pdf_progress("Menyusun executive summary dengan Gemini...")
+                        exec_sum, err_exec = generate_executive_summary(
+                            tema=tema,
+                            tgl_mulai=tanggal_mulai,
+                            tgl_akhir=tanggal_akhir,
+                            metrik=metrik_pdf,
+                            cluster_summaries=cluster_sums,
+                            api_key=GEMINI_API_KEY,
+                            bahasa=bahasa_pdf,
+                        )
+                        if err_exec:
+                            exec_sum = f"[Executive summary tidak tersedia: {err_exec}]"
+
+                        # Build PDF
+                        _pdf_progress("Membuat file PDF...")
+                        pdf_bytes = buat_pdf_report(
+                            tema=tema,
+                            tgl_mulai=tanggal_mulai,
+                            tgl_akhir=tanggal_akhir,
+                            hasil_tampil=hasil_tampil,
+                            artikel_dipilih=artikel_dipilih_final,
+                            executive_summary=exec_sum,
+                            cluster_summaries=cluster_sums,
+                            metrik=metrik_pdf,
+                            bahasa=bahasa_pdf,
+                        )
+
+                    except Exception as e:
+                        error_pdf = str(e)
+
+                    progress_pdf.empty()
+
+                    if error_pdf:
+                        st.error(f"Gagal generate PDF: {error_pdf}")
+                    elif pdf_bytes:
+                        nama_file = (
+                            f"media_report_{re.sub(r'[^a-zA-Z0-9]', '_', tema)}"
+                            f"_{datetime.now().strftime('%Y%m%d')}.pdf"
+                        )
+                        st.success("✅ PDF berhasil dibuat!")
+
+                        # Preview executive summary sebelum download
+                        if exec_sum and not exec_sum.startswith("["):
+                            with st.expander("📋 Preview Executive Summary"):
+                                st.write(exec_sum)
+
+                        st.download_button(
+                            label="⬇️ Download PDF Report",
+                            data=pdf_bytes,
+                            file_name=nama_file,
+                            mime="application/pdf",
+                            use_container_width=True,
+                            type="primary",
+                        )
+                elif not artikel_dipilih_final:
+                    st.warning("Pilih minimal 1 artikel untuk generate report.")
+
     else:
         st.info("Masukkan tema di sidebar lalu klik **Cari Berita** untuk mulai.")
 
