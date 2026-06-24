@@ -44,7 +44,7 @@ try:
 except Exception:
     AI_SUMMARY_PASSWORD = None
 
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-2.5-flash"
 PESAN_HUBUNGI_DEVELOPER = (
     "Password salah. Fitur ringkasan AI ini terbatas — "
     "hubungi developer aplikasi untuk mendapatkan akses."
