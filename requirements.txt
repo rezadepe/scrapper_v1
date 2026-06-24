@@ -11,3 +11,4 @@ pandas
 google-generativeai
 supabase
 plotly
+kaleido
