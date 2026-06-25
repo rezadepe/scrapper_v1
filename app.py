@@ -3017,7 +3017,7 @@ with tab_cari:
         st.info("Masukkan tema di sidebar lalu klik **Cari Berita** untuk mulai.")
 
 with tab_monitoring:
-    log_event(SUPABASE, st.session_state["session_id"], "tab_switch", {"nama_tab": "Monitoring"})
+    # log_event(SUPABASE, st.session_state["session_id"], "tab_switch", {"nama_tab": "Monitoring"}) --turn off reduce database stream
     st.subheader("📡 Monitoring Watchlist")
     st.caption(
         "Track topik secara berkelanjutan. Beda dari Pencarian Cepat: hasil di sini "
