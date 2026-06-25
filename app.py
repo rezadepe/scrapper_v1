@@ -40,6 +40,12 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
+from event_tracker import log_event
+import uuid
+
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = str(uuid.uuid4())
+
 # =========================================================
 # KONFIGURASI HALAMAN
 # =========================================================
@@ -2463,8 +2469,10 @@ with st.sidebar:
         if submit_password:
             if password_input == AI_SUMMARY_PASSWORD:
                 st.session_state.ai_unlocked = True
+                log_event(SUPABASE, st.session_state["session_id"], "ai_unlock_attempt", {"sukses": True})
                 st.rerun()
             else:
+                log_event(SUPABASE, st.session_state["session_id"], "ai_unlock_attempt", {"sukses": False})
                 st.error(PESAN_HUBUNGI_DEVELOPER)
 
 tab_cari, tab_monitoring = st.tabs(["🔍 Pencarian Cepat", "📡 Monitoring"])
@@ -2502,6 +2510,13 @@ with tab_cari:
             st.session_state.hasil = hasil
             st.session_state.klaster = deteksi_klaster_berita(hasil)
             st.success(f"Selesai! Ditemukan {len(hasil)} artikel unik.")
+            log_event(SUPABASE, st.session_state["session_id"], "search", {
+                "tema": tema,
+                "sumber_dipilih": list(sumber_dipilih),
+                "tanggal_mulai": str(tanggal_mulai),
+                "tanggal_akhir": str(tanggal_akhir),
+                "jumlah_hasil": len(hasil),
+            })
 
     # =========================================================
     # TAMPILKAN HASIL
@@ -2594,6 +2609,10 @@ with tab_cari:
                             if st.button("✨ Ringkas dengan AI (Gemini)", key=f"btn_ai_{item['link']}"):
                                 with st.spinner("Meringkas dengan Gemini..."):
                                     hasil_ai, error = ringkas_gemini(item["konten"], GEMINI_API_KEY)
+                                log_event(SUPABASE, st.session_state["session_id"], "gemini_summary", {
+                                    "sukses": hasil_ai is not None,
+                                    "alasan_error": error if error else None,
+                                })
                                 if hasil_ai:
                                     item["ringkasan_ai"] = hasil_ai
                                     st.rerun()
@@ -2819,6 +2838,10 @@ with tab_cari:
                             if st.button("🔍 Bandingkan Sudut Pandang dengan AI", key=f"btn_banding_{cluster_key}"):
                                 with st.spinner("Membandingkan framing antar sumber dengan Gemini..."):
                                     hasil_banding, error = bandingkan_sudut_pandang_gemini(artikel_klaster, GEMINI_API_KEY)
+                                log_event(SUPABASE, st.session_state["session_id"], "gemini_compare", {
+                                        "jumlah_artikel_dibandingkan": len(artikel_klaster),
+                                        "sukses": hasil_banding is not None,
+                                    })
                                 if hasil_banding:
                                     st.session_state[hasil_banding_key] = hasil_banding
                                     st.rerun()
@@ -2959,6 +2982,12 @@ with tab_cari:
 
                     progress_pdf.empty()
 
+                    log_event(SUPABASE, st.session_state["session_id"], "pdf_generate", {
+                        "jumlah_artikel": len(artikel_dipilih_final),
+                        "bahasa": bahasa_pdf,
+                        "sukses": error_pdf is None,
+                    })
+
                     if error_pdf:
                         st.error(f"Gagal generate PDF: {error_pdf}")
                     elif pdf_bytes:
@@ -2988,6 +3017,7 @@ with tab_cari:
         st.info("Masukkan tema di sidebar lalu klik **Cari Berita** untuk mulai.")
 
 with tab_monitoring:
+    log_event(SUPABASE, st.session_state["session_id"], "tab_switch", {"nama_tab": "Monitoring"})
     st.subheader("📡 Monitoring Watchlist")
     st.caption(
         "Track topik secara berkelanjutan. Beda dari Pencarian Cepat: hasil di sini "
@@ -3029,6 +3059,10 @@ with tab_monitoring:
                             nama_topik_baru.strip(), kata_kunci_baru.strip(), sumber_baru, exact_baru
                         )
                         if hasil_tambah:
+                            log_event(SUPABASE, st.session_state["session_id"], "watchlist_action", {
+                                "jenis_aksi": "tambah",
+                                "nama_topik": nama_topik_baru.strip(),
+                            })
                             st.success(f"Topik '{nama_topik_baru}' ditambahkan ke watchlist.")
                             st.rerun()
 
@@ -3078,10 +3112,18 @@ with tab_monitoring:
                                     )
                                     jumlah_baru = simpan_artikel_history(wl["id"], hasil_wl)
                                 st.success(f"{jumlah_baru} artikel baru disimpan (dari {len(hasil_wl)} ditemukan).")
+                                log_event(SUPABASE, st.session_state["session_id"], "watchlist_action", {
+                                    "jenis_aksi": "refresh",
+                                    "nama_topik": wl["nama_topik"],
+                                })
                                 st.rerun()
                         with col_hapus:
                             if st.button("🗑️ Hapus", key=f"hapus_wl_{wl['id']}", use_container_width=True):
                                 hapus_watchlist(wl["id"])
+                                log_event(SUPABASE, st.session_state["session_id"], "watchlist_action", {
+                                    "jenis_aksi": "hapus",
+                                    "nama_topik": wl["nama_topik"],
+                                })
                                 st.rerun()
 
                         with st.expander("📊 Analitik & Tren"):
