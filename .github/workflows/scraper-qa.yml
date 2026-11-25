@@ -1,0 +1,87 @@
+name: Scraper QA
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 06:00 WIB setiap hari: unit test + health check
+    - cron: "0 1 * * 1"    # 08:00 WIB setiap Senin: + benchmark default_app
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: "Skenario benchmark, pisahkan dengan spasi (cepat / default_app / seminggu). Kosongkan untuk lewati."
+        default: "cepat"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scraper-qa
+  cancel-in-progress: false
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      QA_LABEL: github-actions
+      TZ: UTC   # sama seperti Streamlit Cloud, supaya bug zona waktu ikut terdeteksi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependensi
+        run: pip install -r requirements.txt -r qa/requirements-qa.txt
+
+      - name: Ambil riwayat laporan sebelumnya
+        run: |
+          mkdir -p reports
+          if git fetch --depth 1 origin qa-reports 2>/dev/null; then
+            for f in history.csv benchmark_history.csv; do
+              git show "FETCH_HEAD:reports/$f" > "reports/$f" 2>/dev/null || rm -f "reports/$f"
+            done
+          fi
+
+      - name: Unit test offline
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m pytest -q --junitxml=reports/pytest.xml 2>&1 | tee reports/pytest_output.txt
+
+      - name: Health check live
+        run: python -m qa.health_check
+
+      - name: Benchmark
+        if: github.event.schedule == '0 1 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.benchmark != '')
+        env:
+          SKENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark || 'default_app' }}
+        run: python -m qa.benchmark --skenario $SKENARIO
+
+      - name: Terbitkan laporan ke branch qa-reports
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cp -r reports /tmp/reports_baru
+          rm -rf /tmp/qa-pub && mkdir /tmp/qa-pub && cd /tmp/qa-pub
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git fetch -q --depth 1 origin qa-reports 2>/dev/null; then
+            git checkout -q -b qa-reports FETCH_HEAD
+          else
+            git checkout -q --orphan qa-reports
+          fi
+          mkdir -p reports
+          cp -r /tmp/reports_baru/. reports/
+          # simpan 60 laporan health & 26 laporan benchmark terakhir saja
+          ls -1t reports/health_*.json 2>/dev/null | tail -n +61 | xargs -r rm --
+          ls -1t reports/benchmark_*.json 2>/dev/null | tail -n +27 | xargs -r rm --
+          git config user.name "scraper-qa-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports
+          git commit -qm "QA $(date -u +%Y-%m-%dT%H:%MZ)" || echo "Tidak ada perubahan"
+          git push -q origin qa-reports
