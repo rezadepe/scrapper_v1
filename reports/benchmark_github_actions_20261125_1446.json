@@ -1,0 +1,69 @@
+{
+  "jenis": "benchmark",
+  "meta": {
+    "label": "github-actions",
+    "github_actions": true,
+    "python": "3.11.18",
+    "platform": "Linux-7.0.0-1020-azure-x86_64-with-glibc2.43",
+    "tz_server": "UTC",
+    "commit_app": "daeb81c",
+    "waktu_mulai_wib": "2026-11-25 14:46"
+  },
+  "skenario": [
+    {
+      "skenario": "cepat",
+      "hari": 1,
+      "halaman": 1,
+      "ambil_konten": false,
+      "tanggal_mulai": "2026-11-25",
+      "tanggal_akhir": "2026-11-25",
+      "tema": "indonesia",
+      "error": null,
+      "total_s": 5.6,
+      "fase_pencarian_s": 5.6,
+      "fase_konten_s": 0.0,
+      "jumlah_artikel": 62,
+      "artikel_per_menit": 667.6,
+      "selesai_per_sumber_s": {
+        "CNBC Indonesia": 1.5,
+        "Kompas": 1.5,
+        "Liputan6": 1.8,
+        "Republika": 1.9,
+        "CNN Indonesia": 1.9,
+        "Detik": 2.5,
+        "The Conversation": 3.4,
+        "Tempo.co": 3.9,
+        "Kumparan": 5.6
+      },
+      "sumber_terlambat": "Kumparan",
+      "artikel_per_sumber": {
+        "CNBC Indonesia": 10,
+        "CNN Indonesia": 10,
+        "Detik": 10,
+        "Kumparan": 32
+      },
+      "http": {
+        "request_total": 19,
+        "request_gagal": 2,
+        "status_http": {
+          "200": 17,
+          "403": 2
+        },
+        "terdeteksi_blokir": 2,
+        "total_kb": 2179.9,
+        "latensi_rata_s": 0.786,
+        "latensi_maks_s": 1.72,
+        "contoh_url_gagal": [
+          "403 https://www.tempo.co/search?q=indonesia",
+          "403 https://www.tempo.co/api/search/articles"
+        ]
+      },
+      "pesan_error": [
+        "[Liputan6] ⚠️ Liputan6: halaman berhasil diambil (255780 karakter) tapi 0 artikel cocok dengan selector -- kemungkinan struktur HTML berubah atau diblokir/disuguhi halaman beda dari biasanya.",
+        "[The Conversation] ⚠️ The Conversation: 0 artikel cocok selector di halaman 1 -- struktur HTML mungkin berubah.",
+        "[Tempo.co] ⚠️ Tempo warm-up: HTTP 403",
+        "[Tempo.co] ⚠️ Tempo: HTTP 403 di halaman 1"
+      ]
+    }
+  ]
+}

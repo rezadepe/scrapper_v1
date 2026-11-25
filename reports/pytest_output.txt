@@ -1,0 +1,309 @@
+..FF....FF.FF....FFF.FFF....sFF                                          [100%]
+=================================== FAILURES ===================================
+_______________________ test_keyword_dikirim_utuh[Detik] _______________________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+sumber = 'Detik'
+
+    @pytest.mark.parametrize("sumber", SUMBER_DENGAN_QUERY)
+    def test_keyword_dikirim_utuh(engine, sumber):
+        with HttpProbe("replay", tape={}) as probe:  # tape kosong: semua request dicatat, tidak ke internet
+            panggil_scraper(engine, sumber, KEYWORD, 1, date(2026, 11, 1), date(2026, 11, 2))
+        assert probe.miss, "scraper tidak mengirim request apa pun"
+>       assert _keyword_terkirim(probe.miss), f"Keyword rusak. Request: {[m['url'] for m in probe.miss][:2]}"
+E       AssertionError: Keyword rusak. Request: ['https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026']
+E       assert False
+E        +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}])
+E        +    where [{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x6ffe9a79e750>.miss
+
+tests/test_encoding_query.py:34: AssertionError
+______________________ test_keyword_dikirim_utuh[Kompas] _______________________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+sumber = 'Kompas'
+
+    @pytest.mark.parametrize("sumber", SUMBER_DENGAN_QUERY)
+    def test_keyword_dikirim_utuh(engine, sumber):
+        with HttpProbe("replay", tape={}) as probe:  # tape kosong: semua request dicatat, tidak ke internet
+            panggil_scraper(engine, sumber, KEYWORD, 1, date(2026, 11, 1), date(2026, 11, 2))
+        assert probe.miss, "scraper tidak mengirim request apa pun"
+>       assert _keyword_terkirim(probe.miss), f"Keyword rusak. Request: {[m['url'] for m in probe.miss][:2]}"
+E       AssertionError: Keyword rusak. Request: ['https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1']
+E       assert False
+E        +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}])
+E        +    where [{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x6ffe9a7c2090>.miss
+
+tests/test_encoding_query.py:34: AssertionError
+____________ test_error_tempo_dikenali_sebagai_konten_invalid[403-] ____________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+status = 403, html = ''
+
+    @pytest.mark.parametrize("status, html", [
+        (403, ""),                                        # diblokir Cloudflare
+        (200, "<html><body><p>tanpa wrapper</p></body></html>"),  # struktur halaman berubah
+    ])
+    def test_error_tempo_dikenali_sebagai_konten_invalid(engine, status, html):
+        with HttpProbe("replay", tape=_tape(URL_TEMPO, status, html)):
+            hasil = engine.scrape_isi_artikel(URL_TEMPO)
+>       assert hasil in engine.KONTEN_INVALID, f"{hasil!r} tidak ada di KONTEN_INVALID"
+E       AssertionError: 'Gagal mengambil halaman (HTTP 403)' tidak ada di KONTEN_INVALID
+E       assert 'Gagal mengambil halaman (HTTP 403)' in {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'}
+E        +  where {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'} = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.KONTEN_INVALID
+
+tests/test_konten_invalid.py:20: AssertionError
+_ test_error_tempo_dikenali_sebagai_konten_invalid[200-<html><body><p>tanpa wrapper</p></body></html>] _
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+status = 200, html = '<html><body><p>tanpa wrapper</p></body></html>'
+
+    @pytest.mark.parametrize("status, html", [
+        (403, ""),                                        # diblokir Cloudflare
+        (200, "<html><body><p>tanpa wrapper</p></body></html>"),  # struktur halaman berubah
+    ])
+    def test_error_tempo_dikenali_sebagai_konten_invalid(engine, status, html):
+        with HttpProbe("replay", tape=_tape(URL_TEMPO, status, html)):
+            hasil = engine.scrape_isi_artikel(URL_TEMPO)
+>       assert hasil in engine.KONTEN_INVALID, f"{hasil!r} tidak ada di KONTEN_INVALID"
+E       AssertionError: 'Konten tidak ditemukan' tidak ada di KONTEN_INVALID
+E       assert 'Konten tidak ditemukan' in {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'}
+E        +  where {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'} = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.KONTEN_INVALID
+
+tests/test_konten_invalid.py:20: AssertionError
+__________________ test_pesan_error_tidak_dianalisis_sentimen __________________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6ffe9a79a150>
+
+    def test_pesan_error_tidak_dianalisis_sentimen(engine, monkeypatch):
+        pesan_error = "Gagal mengambil halaman (HTTP 403)"
+        artikel = {"sumber": "Uji", "judul": "Pemerintah umumkan program baru",
+                   "link": "https://contoh.id/1", "tanggal": None, "tanggal_teks": None}
+        monkeypatch.setitem(engine.SCRAPER_PER_SUMBER, "Uji", lambda *a, **k: [dict(artikel)])
+        monkeypatch.setattr(engine, "scrape_isi_artikel", lambda *a, **k: pesan_error)
+    
+        teks_dianalisis = []
+        asli = engine.analisis_sentimen
+        monkeypatch.setattr(engine, "analisis_sentimen", lambda t: (teks_dianalisis.append(t), asli(t))[1])
+    
+        hasil = engine.cari_berita("program", ["Uji"], None, None, 1, ambil_konten=True)
+        assert hasil, "artikel uji hilang"
+>       assert pesan_error not in teks_dianalisis, "Sentimen dihitung dari pesan error, bukan dari berita"
+E       AssertionError: Sentimen dihitung dari pesan error, bukan dari berita
+E       assert 'Gagal mengambil halaman (HTTP 403)' not in ['Gagal mengambil halaman (HTTP 403)']
+
+tests/test_konten_invalid.py:41: AssertionError
+___________________ test_kumparan_tidak_cocok_potongan_kata ____________________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6ffe9a7c9690>
+
+    def test_kumparan_tidak_cocok_potongan_kata(engine, monkeypatch):
+        monkeypatch.setattr(engine, "KUMPARAN_SITEMAP_CHANNELS", ["https://kumparan.com/sitemap_uji.xml"])
+        monkeypatch.setattr(engine, "ambil_halaman", lambda *a, **k: XML)
+        hasil = engine.scrape_kumparan("PSI")
+>       assert [a["link"] for a in hasil] == ["https://kumparan.com/a/2"]
+E       AssertionError: assert ['https://kum...aran.com/a/2'] == ['https://kumparan.com/a/2']
+E         
+E         At index 0 diff: 'https://kumparan.com/a/1' != 'https://kumparan.com/a/2'
+E         Left contains one more item: 'https://kumparan.com/a/2'
+E         
+E         Full diff: (-: missing in left side, +: extra in left side)
+E           [
+E         +     'https://kumparan.com/a/1',
+E               'https://kumparan.com/a/2',
+E           ]
+
+tests/test_kumparan.py:15: AssertionError
+_____________ test_singkatan_bulan_indonesia[12 Okt 2026-harapan0] _____________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+teks = '12 Okt 2026', harapan = datetime.datetime(2026, 10, 12, 0, 0)
+
+    @pytest.mark.parametrize("teks, harapan", [
+        ("12 Okt 2026", datetime(2026, 10, 12)),
+        ("3 Des 2026, 08:00", datetime(2026, 12, 3, 8, 0)),
+        ("17 Agu 2026", datetime(2026, 8, 17)),
+        ("5 Mei 2026 19:00 WIB", datetime(2026, 5, 5, 19, 0)),
+    ])
+    def test_singkatan_bulan_indonesia(engine, teks, harapan):
+        """Banyak situs memakai singkatan bulan. Hasil salah = artikel masuk tanggal keliru."""
+>       assert engine.parse_tanggal(teks) == harapan
+E       AssertionError: assert datetime.datetime(2026, 12, 25, 0, 0) == datetime.datetime(2026, 10, 12, 0, 0)
+E        +  where datetime.datetime(2026, 12, 25, 0, 0) = <function parse_tanggal at 0x6ffe9a9a0400>('12 Okt 2026')
+E        +    where <function parse_tanggal at 0x6ffe9a9a0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+
+tests/test_parse_tanggal.py:25: AssertionError
+__________ test_singkatan_bulan_indonesia[3 Des 2026, 08:00-harapan1] __________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+teks = '3 Des 2026, 08:00', harapan = datetime.datetime(2026, 12, 3, 8, 0)
+
+    @pytest.mark.parametrize("teks, harapan", [
+        ("12 Okt 2026", datetime(2026, 10, 12)),
+        ("3 Des 2026, 08:00", datetime(2026, 12, 3, 8, 0)),
+        ("17 Agu 2026", datetime(2026, 8, 17)),
+        ("5 Mei 2026 19:00 WIB", datetime(2026, 5, 5, 19, 0)),
+    ])
+    def test_singkatan_bulan_indonesia(engine, teks, harapan):
+        """Banyak situs memakai singkatan bulan. Hasil salah = artikel masuk tanggal keliru."""
+>       assert engine.parse_tanggal(teks) == harapan
+E       AssertionError: assert datetime.datetime(2026, 3, 25, 8, 0) == datetime.datetime(2026, 12, 3, 8, 0)
+E        +  where datetime.datetime(2026, 3, 25, 8, 0) = <function parse_tanggal at 0x6ffe9a9a0400>('3 Des 2026, 08:00')
+E        +    where <function parse_tanggal at 0x6ffe9a9a0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+
+tests/test_parse_tanggal.py:25: AssertionError
+_____________ test_singkatan_bulan_indonesia[17 Agu 2026-harapan2] _____________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+teks = '17 Agu 2026', harapan = datetime.datetime(2026, 8, 17, 0, 0)
+
+    @pytest.mark.parametrize("teks, harapan", [
+        ("12 Okt 2026", datetime(2026, 10, 12)),
+        ("3 Des 2026, 08:00", datetime(2026, 12, 3, 8, 0)),
+        ("17 Agu 2026", datetime(2026, 8, 17)),
+        ("5 Mei 2026 19:00 WIB", datetime(2026, 5, 5, 19, 0)),
+    ])
+    def test_singkatan_bulan_indonesia(engine, teks, harapan):
+        """Banyak situs memakai singkatan bulan. Hasil salah = artikel masuk tanggal keliru."""
+>       assert engine.parse_tanggal(teks) == harapan
+E       AssertionError: assert None == datetime.datetime(2026, 8, 17, 0, 0)
+E        +  where None = <function parse_tanggal at 0x6ffe9a9a0400>('17 Agu 2026')
+E        +    where <function parse_tanggal at 0x6ffe9a9a0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+
+tests/test_parse_tanggal.py:25: AssertionError
+___________ test_waktu_relatif_tidak_menebak_salah[2 jam yang lalu] ____________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+teks = '2 jam yang lalu'
+
+    @pytest.mark.parametrize("teks", ["2 jam yang lalu", "30 menit yang lalu", "1 hari yang lalu"])
+    def test_waktu_relatif_tidak_menebak_salah(engine, teks):
+        """Boleh None (ditandai 'cek manual'), atau mendekati waktu sekarang (WIB). Tidak boleh tanggal acak."""
+        hasil = engine.parse_tanggal(teks)
+        sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
+>       assert hasil is None or abs(hasil - sekarang) <= timedelta(days=1, hours=1), f"{teks!r} -> {hasil}"
+E       AssertionError: '2 jam yang lalu' -> 2026-11-02 00:00:00
+E       assert (datetime.datetime(2026, 11, 2, 0, 0) is None or datetime.timedelta(days=23, seconds=53126, microseconds=519889) <= datetime.timedelta(days=1, seconds=3600))
+E        +  where datetime.timedelta(days=23, seconds=53126, microseconds=519889) = abs((datetime.datetime(2026, 11, 2, 0, 0) - datetime.datetime(2026, 11, 25, 14, 45, 26, 519889)))
+E        +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
+
+tests/test_parse_tanggal.py:33: AssertionError
+__________ test_waktu_relatif_tidak_menebak_salah[30 menit yang lalu] __________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+teks = '30 menit yang lalu'
+
+    @pytest.mark.parametrize("teks", ["2 jam yang lalu", "30 menit yang lalu", "1 hari yang lalu"])
+    def test_waktu_relatif_tidak_menebak_salah(engine, teks):
+        """Boleh None (ditandai 'cek manual'), atau mendekati waktu sekarang (WIB). Tidak boleh tanggal acak."""
+        hasil = engine.parse_tanggal(teks)
+        sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
+>       assert hasil is None or abs(hasil - sekarang) <= timedelta(days=1, hours=1), f"{teks!r} -> {hasil}"
+E       AssertionError: '30 menit yang lalu' -> 2026-11-30 00:00:00
+E       assert (datetime.datetime(2026, 11, 30, 0, 0) is None or datetime.timedelta(days=4, seconds=33273, microseconds=477172) <= datetime.timedelta(days=1, seconds=3600))
+E        +  where datetime.timedelta(days=4, seconds=33273, microseconds=477172) = abs((datetime.datetime(2026, 11, 30, 0, 0) - datetime.datetime(2026, 11, 25, 14, 45, 26, 522828)))
+E        +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
+
+tests/test_parse_tanggal.py:33: AssertionError
+___________ test_waktu_relatif_tidak_menebak_salah[1 hari yang lalu] ___________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+teks = '1 hari yang lalu'
+
+    @pytest.mark.parametrize("teks", ["2 jam yang lalu", "30 menit yang lalu", "1 hari yang lalu"])
+    def test_waktu_relatif_tidak_menebak_salah(engine, teks):
+        """Boleh None (ditandai 'cek manual'), atau mendekati waktu sekarang (WIB). Tidak boleh tanggal acak."""
+        hasil = engine.parse_tanggal(teks)
+        sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
+>       assert hasil is None or abs(hasil - sekarang) <= timedelta(days=1, hours=1), f"{teks!r} -> {hasil}"
+E       AssertionError: '1 hari yang lalu' -> 2026-11-01 00:00:00
+E       assert (datetime.datetime(2026, 11, 1, 0, 0) is None or datetime.timedelta(days=24, seconds=53126, microseconds=525616) <= datetime.timedelta(days=1, seconds=3600))
+E        +  where datetime.timedelta(days=24, seconds=53126, microseconds=525616) = abs((datetime.datetime(2026, 11, 1, 0, 0) - datetime.datetime(2026, 11, 25, 14, 45, 26, 525616)))
+E        +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
+
+tests/test_parse_tanggal.py:33: AssertionError
+_____________________ test_detik_tanggal_wib_di_server_utc _____________________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6ffe9a676910>
+server_utc = None
+
+    def test_detik_tanggal_wib_di_server_utc(engine, monkeypatch, server_utc):
+        monkeypatch.setattr(engine, "ambil_halaman", lambda *a, **k: HTML_DETIK)
+        hasil = engine.scrape_detik("contoh", max_halaman=1)
+>       assert hasil[0]["tanggal"] == datetime(2026, 11, 25, 0, 30)
+E       assert datetime.datetime(2026, 11, 24, 17, 30) == datetime.datetime(2026, 11, 25, 0, 30)
+E        +  where datetime.datetime(2026, 11, 25, 0, 30) = datetime(2026, 11, 25, 0, 30)
+
+tests/test_zona_waktu.py:18: AssertionError
+_________________ test_detik_artikel_dini_hari_tidak_terbuang __________________
+
+engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6ffe9a680090>
+server_utc = None
+
+    def test_detik_artikel_dini_hari_tidak_terbuang(engine, monkeypatch, server_utc):
+        monkeypatch.setattr(engine, "ambil_halaman", lambda *a, **k: HTML_DETIK)
+        hasil = engine.cari_berita("contoh", ["Detik"], date(2026, 11, 25), date(2026, 11, 25), 1, ambil_konten=False)
+>       assert len(hasil) == 1, "Artikel 25 Nov 00:30 WIB terbuang dari filter tanggal 25 Nov"
+E       AssertionError: Artikel 25 Nov 00:30 WIB terbuang dari filter tanggal 25 Nov
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_zona_waktu.py:24: AssertionError
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_replay_fixtures.py:28: Belum ada fixture. Jalankan: python -m qa.capture_fixtures
+FAILED tests/test_encoding_query.py::test_keyword_dikirim_utuh[Detik] - AssertionError: Keyword rusak. Request: ['https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026']
+assert False
+ +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}])
+ +    where [{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x6ffe9a79e750>.miss
+FAILED tests/test_encoding_query.py::test_keyword_dikirim_utuh[Kompas] - AssertionError: Keyword rusak. Request: ['https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1']
+assert False
+ +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}])
+ +    where [{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x6ffe9a7c2090>.miss
+FAILED tests/test_konten_invalid.py::test_error_tempo_dikenali_sebagai_konten_invalid[403-] - AssertionError: 'Gagal mengambil halaman (HTTP 403)' tidak ada di KONTEN_INVALID
+assert 'Gagal mengambil halaman (HTTP 403)' in {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'}
+ +  where {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'} = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.KONTEN_INVALID
+FAILED tests/test_konten_invalid.py::test_error_tempo_dikenali_sebagai_konten_invalid[200-<html><body><p>tanpa wrapper</p></body></html>] - AssertionError: 'Konten tidak ditemukan' tidak ada di KONTEN_INVALID
+assert 'Konten tidak ditemukan' in {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'}
+ +  where {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'} = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.KONTEN_INVALID
+FAILED tests/test_konten_invalid.py::test_pesan_error_tidak_dianalisis_sentimen - AssertionError: Sentimen dihitung dari pesan error, bukan dari berita
+assert 'Gagal mengambil halaman (HTTP 403)' not in ['Gagal mengambil halaman (HTTP 403)']
+FAILED tests/test_kumparan.py::test_kumparan_tidak_cocok_potongan_kata - AssertionError: assert ['https://kum...aran.com/a/2'] == ['https://kumparan.com/a/2']
+  
+  At index 0 diff: 'https://kumparan.com/a/1' != 'https://kumparan.com/a/2'
+  Left contains one more item: 'https://kumparan.com/a/2'
+  
+  Full diff: (-: missing in left side, +: extra in left side)
+    [
+  +     'https://kumparan.com/a/1',
+        'https://kumparan.com/a/2',
+    ]
+FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[12 Okt 2026-harapan0] - AssertionError: assert datetime.datetime(2026, 12, 25, 0, 0) == datetime.datetime(2026, 10, 12, 0, 0)
+ +  where datetime.datetime(2026, 12, 25, 0, 0) = <function parse_tanggal at 0x6ffe9a9a0400>('12 Okt 2026')
+ +    where <function parse_tanggal at 0x6ffe9a9a0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[3 Des 2026, 08:00-harapan1] - AssertionError: assert datetime.datetime(2026, 3, 25, 8, 0) == datetime.datetime(2026, 12, 3, 8, 0)
+ +  where datetime.datetime(2026, 3, 25, 8, 0) = <function parse_tanggal at 0x6ffe9a9a0400>('3 Des 2026, 08:00')
+ +    where <function parse_tanggal at 0x6ffe9a9a0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[17 Agu 2026-harapan2] - AssertionError: assert None == datetime.datetime(2026, 8, 17, 0, 0)
+ +  where None = <function parse_tanggal at 0x6ffe9a9a0400>('17 Agu 2026')
+ +    where <function parse_tanggal at 0x6ffe9a9a0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+FAILED tests/test_parse_tanggal.py::test_waktu_relatif_tidak_menebak_salah[2 jam yang lalu] - AssertionError: '2 jam yang lalu' -> 2026-11-02 00:00:00
+assert (datetime.datetime(2026, 11, 2, 0, 0) is None or datetime.timedelta(days=23, seconds=53126, microseconds=519889) <= datetime.timedelta(days=1, seconds=3600))
+ +  where datetime.timedelta(days=23, seconds=53126, microseconds=519889) = abs((datetime.datetime(2026, 11, 2, 0, 0) - datetime.datetime(2026, 11, 25, 14, 45, 26, 519889)))
+ +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
+FAILED tests/test_parse_tanggal.py::test_waktu_relatif_tidak_menebak_salah[30 menit yang lalu] - AssertionError: '30 menit yang lalu' -> 2026-11-30 00:00:00
+assert (datetime.datetime(2026, 11, 30, 0, 0) is None or datetime.timedelta(days=4, seconds=33273, microseconds=477172) <= datetime.timedelta(days=1, seconds=3600))
+ +  where datetime.timedelta(days=4, seconds=33273, microseconds=477172) = abs((datetime.datetime(2026, 11, 30, 0, 0) - datetime.datetime(2026, 11, 25, 14, 45, 26, 522828)))
+ +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
+FAILED tests/test_parse_tanggal.py::test_waktu_relatif_tidak_menebak_salah[1 hari yang lalu] - AssertionError: '1 hari yang lalu' -> 2026-11-01 00:00:00
+assert (datetime.datetime(2026, 11, 1, 0, 0) is None or datetime.timedelta(days=24, seconds=53126, microseconds=525616) <= datetime.timedelta(days=1, seconds=3600))
+ +  where datetime.timedelta(days=24, seconds=53126, microseconds=525616) = abs((datetime.datetime(2026, 11, 1, 0, 0) - datetime.datetime(2026, 11, 25, 14, 45, 26, 525616)))
+ +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
+FAILED tests/test_zona_waktu.py::test_detik_tanggal_wib_di_server_utc - assert datetime.datetime(2026, 11, 24, 17, 30) == datetime.datetime(2026, 11, 25, 0, 30)
+ +  where datetime.datetime(2026, 11, 25, 0, 30) = datetime(2026, 11, 25, 0, 30)
+FAILED tests/test_zona_waktu.py::test_detik_artikel_dini_hari_tidak_terbuang - AssertionError: Artikel 25 Nov 00:30 WIB terbuang dari filter tanggal 25 Nov
+assert 0 == 1
+ +  where 0 = len([])
+14 failed, 16 passed, 1 skipped in 3.14s
