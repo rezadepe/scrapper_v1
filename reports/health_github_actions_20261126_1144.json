@@ -1,0 +1,569 @@
+{
+  "jenis": "health_check",
+  "meta": {
+    "label": "github-actions",
+    "github_actions": true,
+    "python": "3.11.18",
+    "platform": "Linux-7.0.0-1020-azure-x86_64-with-glibc2.43",
+    "tz_server": "UTC",
+    "commit_app": "daeb81c",
+    "waktu_mulai_wib": "2026-11-26 11:44",
+    "durasi_total_s": 59.6,
+    "tema": "indonesia",
+    "tanggal_mulai": "2026-11-24",
+    "tanggal_akhir": "2026-11-26",
+    "halaman": 1,
+    "sampel_konten": 3,
+    "ambang": {
+      "pct_tanggal_terbaca_min": 90,
+      "pct_dalam_rentang_min": 90,
+      "pct_konten_berhasil_min": 70
+    }
+  },
+  "sumber": [
+    {
+      "sumber": "CNBC Indonesia",
+      "error": null,
+      "durasi_scrape_s": 1.42,
+      "jumlah_artikel": 10,
+      "link_unik": 10,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 100.0,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 100.0,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-11-24T08:00:50",
+        "tanggal_maks": "2026-11-26T09:00:28",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "2026/11/26 07:30:24",
+            "tanggal_parse": "2026-11-26T07:30:24"
+          },
+          {
+            "tanggal_teks": "2026/11/26 09:00:28",
+            "tanggal_parse": "2026-11-26T09:00:28"
+          },
+          {
+            "tanggal_teks": "2026/11/26 06:10:00",
+            "tanggal_parse": "2026-11-26T06:10:00"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 3,
+        "sumber_konten": {
+          "dari_search": 3,
+          "fetch_halaman": 0
+        },
+        "panjang_rata": 6123,
+        "durasi_rata_s": null,
+        "contoh_gagal": [],
+        "pct_berhasil": 100.0
+      },
+      "durasi_konten_s": 0.0,
+      "durasi_s": 1.42,
+      "http": {
+        "request_total": 1,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 1
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 107.1,
+        "latensi_rata_s": 0.315,
+        "latensi_maks_s": 0.315,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "ok",
+      "alasan": []
+    },
+    {
+      "sumber": "CNN Indonesia",
+      "error": null,
+      "durasi_scrape_s": 2.55,
+      "jumlah_artikel": 10,
+      "link_unik": 10,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 100.0,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 100.0,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-11-25T07:30:03",
+        "tanggal_maks": "2026-11-26T11:25:18",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "2026/11/26 11:25:18",
+            "tanggal_parse": "2026-11-26T11:25:18"
+          },
+          {
+            "tanggal_teks": "2026/11/26 11:18:00",
+            "tanggal_parse": "2026-11-26T11:18:00"
+          },
+          {
+            "tanggal_teks": "2026/11/26 10:00:10",
+            "tanggal_parse": "2026-11-26T10:00:10"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 3,
+        "sumber_konten": {
+          "dari_search": 3,
+          "fetch_halaman": 0
+        },
+        "panjang_rata": 2895,
+        "durasi_rata_s": null,
+        "contoh_gagal": [],
+        "pct_berhasil": 100.0
+      },
+      "durasi_konten_s": 0.0,
+      "durasi_s": 2.55,
+      "http": {
+        "request_total": 1,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 1
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 100.1,
+        "latensi_rata_s": 0.972,
+        "latensi_maks_s": 0.972,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "ok",
+      "alasan": []
+    },
+    {
+      "sumber": "Detik",
+      "error": null,
+      "durasi_scrape_s": 12.93,
+      "jumlah_artikel": 12,
+      "link_unik": 12,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 83.3,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 100.0,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-11-25T09:20:43",
+        "tanggal_maks": "2026-11-26T04:43:32",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "Kamis, 26 Nov 2026 11:43 WIB",
+            "tanggal_parse": "2026-11-26T04:43:32"
+          },
+          {
+            "tanggal_teks": "Kamis, 26 Nov 2026 11:39 WIB",
+            "tanggal_parse": "2026-11-26T04:39:07"
+          },
+          {
+            "tanggal_teks": "Kamis, 26 Nov 2026 11:37 WIB",
+            "tanggal_parse": "2026-11-26T04:37:31"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 3,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 3
+        },
+        "panjang_rata": 4904,
+        "durasi_rata_s": 2.18,
+        "contoh_gagal": [],
+        "pct_berhasil": 100.0
+      },
+      "durasi_konten_s": 6.55,
+      "durasi_s": 19.48,
+      "http": {
+        "request_total": 4,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 4
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 946.2,
+        "latensi_rata_s": 3.448,
+        "latensi_maks_s": 11.332,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "ok",
+      "alasan": []
+    },
+    {
+      "sumber": "Kompas",
+      "error": null,
+      "durasi_scrape_s": 2.56,
+      "jumlah_artikel": 20,
+      "link_unik": 20,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 0.0,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 0.0,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-10-26T00:00:00",
+        "tanggal_maks": "2026-11-23T00:00:00",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "20 November 2026",
+            "tanggal_parse": "2026-11-20T00:00:00"
+          },
+          {
+            "tanggal_teks": "11 November 2026",
+            "tanggal_parse": "2026-11-11T00:00:00"
+          },
+          {
+            "tanggal_teks": "18 November 2026",
+            "tanggal_parse": "2026-11-18T00:00:00"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 2,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 3
+        },
+        "panjang_rata": 4410,
+        "durasi_rata_s": 1.84,
+        "contoh_gagal": [
+          {
+            "link": "https://video.kompas.com/watch/1969171/nasib-satwa-liar-di-indonesia",
+            "hasil": "Konten kosong"
+          }
+        ],
+        "pct_berhasil": 66.7
+      },
+      "durasi_konten_s": 5.52,
+      "durasi_s": 8.08,
+      "http": {
+        "request_total": 4,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 4
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 1138.0,
+        "latensi_rata_s": 0.832,
+        "latensi_maks_s": 1.501,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "menurun",
+      "alasan": [
+        "Hanya 0.0% tanggal dalam rentang",
+        "Isi artikel berhasil diambil hanya 66.7%"
+      ]
+    },
+    {
+      "sumber": "Republika",
+      "error": null,
+      "durasi_scrape_s": 1.76,
+      "jumlah_artikel": 22,
+      "link_unik": 22,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 100.0,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 50.0,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-11-02T00:00:00",
+        "tanggal_maks": "2026-11-25T06:40:00",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "2 jam yang lalu",
+            "tanggal_parse": "2026-11-02T00:00:00"
+          },
+          {
+            "tanggal_teks": "2 jam yang lalu",
+            "tanggal_parse": "2026-11-02T00:00:00"
+          },
+          {
+            "tanggal_teks": "3 jam yang lalu",
+            "tanggal_parse": "2026-11-03T00:00:00"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 3,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 3
+        },
+        "panjang_rata": 51484,
+        "durasi_rata_s": 2.86,
+        "contoh_gagal": [],
+        "pct_berhasil": 100.0
+      },
+      "durasi_konten_s": 8.57,
+      "durasi_s": 10.33,
+      "http": {
+        "request_total": 4,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 4
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 799.7,
+        "latensi_rata_s": 1.185,
+        "latensi_maks_s": 2.399,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "menurun",
+      "alasan": [
+        "Hanya 50.0% tanggal dalam rentang"
+      ]
+    },
+    {
+      "sumber": "Liputan6",
+      "error": null,
+      "durasi_scrape_s": 2.46,
+      "jumlah_artikel": 0,
+      "link_unik": 0,
+      "pct_judul_link_lengkap": null,
+      "pct_ada_ringkasan_redaksi": null,
+      "tanggal": {
+        "pct_tanggal_terbaca": null,
+        "pct_dalam_rentang": null,
+        "pct_tanggal_masa_depan": null,
+        "tanggal_min": null,
+        "tanggal_maks": null,
+        "contoh_tanggal": []
+      },
+      "konten": {
+        "diuji": 0,
+        "berhasil": 0,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 0
+        },
+        "panjang_rata": null,
+        "durasi_rata_s": null,
+        "contoh_gagal": [],
+        "pct_berhasil": null
+      },
+      "durasi_konten_s": 0.0,
+      "durasi_s": 2.46,
+      "http": {
+        "request_total": 1,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 1
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 247.9,
+        "latensi_rata_s": 0.797,
+        "latensi_maks_s": 0.797,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [
+        "⚠️ Liputan6: halaman berhasil diambil (253822 karakter) tapi 0 artikel cocok dengan selector -- kemungkinan struktur HTML berubah atau diblokir/disuguhi halaman beda dari biasanya."
+      ],
+      "status": "kosong_mencurigakan",
+      "alasan": [
+        "Request berhasil tapi 0 artikel -- kemungkinan selector/format respons berubah"
+      ]
+    },
+    {
+      "sumber": "Kumparan",
+      "error": null,
+      "durasi_scrape_s": 3.86,
+      "jumlah_artikel": 119,
+      "link_unik": 119,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 93.3,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 31.1,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-09-22T08:36:39.343382",
+        "tanggal_maks": "2026-11-26T11:37:31.466012",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "2026-11-26T11:37:31.466012+07:00",
+            "tanggal_parse": "2026-11-26T11:37:31.466012"
+          },
+          {
+            "tanggal_teks": "2026-11-26T11:31:05.388402+07:00",
+            "tanggal_parse": "2026-11-26T11:31:05.388402"
+          },
+          {
+            "tanggal_teks": "2026-11-26T11:02:07.56394+07:00",
+            "tanggal_parse": "2026-11-26T11:02:07.563940"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 3,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 3
+        },
+        "panjang_rata": 6127,
+        "durasi_rata_s": 1.5,
+        "contoh_gagal": [],
+        "pct_berhasil": 100.0
+      },
+      "durasi_konten_s": 4.49,
+      "durasi_s": 8.35,
+      "http": {
+        "request_total": 13,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 13
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 1608.1,
+        "latensi_rata_s": 0.716,
+        "latensi_maks_s": 1.222,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "menurun",
+      "alasan": [
+        "Hanya 31.1% tanggal dalam rentang"
+      ]
+    },
+    {
+      "sumber": "Tempo.co",
+      "error": null,
+      "durasi_scrape_s": 1.92,
+      "jumlah_artikel": 0,
+      "link_unik": 0,
+      "pct_judul_link_lengkap": null,
+      "pct_ada_ringkasan_redaksi": null,
+      "tanggal": {
+        "pct_tanggal_terbaca": null,
+        "pct_dalam_rentang": null,
+        "pct_tanggal_masa_depan": null,
+        "tanggal_min": null,
+        "tanggal_maks": null,
+        "contoh_tanggal": []
+      },
+      "konten": {
+        "diuji": 0,
+        "berhasil": 0,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 0
+        },
+        "panjang_rata": null,
+        "durasi_rata_s": null,
+        "contoh_gagal": [],
+        "pct_berhasil": null
+      },
+      "durasi_konten_s": 0.0,
+      "durasi_s": 1.92,
+      "http": {
+        "request_total": 2,
+        "request_gagal": 2,
+        "status_http": {
+          "403": 2
+        },
+        "terdeteksi_blokir": 2,
+        "total_kb": 11.0,
+        "latensi_rata_s": 0.057,
+        "latensi_maks_s": 0.102,
+        "contoh_url_gagal": [
+          "403 https://www.tempo.co/search?q=indonesia",
+          "403 https://www.tempo.co/api/search/articles"
+        ]
+      },
+      "log_scraper": [
+        "⚠️ Tempo warm-up: HTTP 403",
+        "⚠️ Tempo: HTTP 403 di halaman 1"
+      ],
+      "status": "diblokir",
+      "alasan": [
+        "2 respons terlihat diblokir (403/429/503/Cloudflare)"
+      ]
+    },
+    {
+      "sumber": "The Conversation",
+      "error": null,
+      "durasi_scrape_s": 1.74,
+      "jumlah_artikel": 3,
+      "link_unik": 3,
+      "pct_judul_link_lengkap": 100.0,
+      "pct_ada_ringkasan_redaksi": 100.0,
+      "tanggal": {
+        "pct_tanggal_terbaca": 100.0,
+        "pct_dalam_rentang": 100.0,
+        "pct_tanggal_masa_depan": 0.0,
+        "tanggal_min": "2026-11-24T01:52:02",
+        "tanggal_maks": "2026-11-25T00:51:35",
+        "contoh_tanggal": [
+          {
+            "tanggal_teks": "Diterbitkan: November 25, 2026",
+            "tanggal_parse": "2026-11-25T00:51:35"
+          },
+          {
+            "tanggal_teks": "Diterbitkan: November 24, 2026",
+            "tanggal_parse": "2026-11-24T04:59:57"
+          },
+          {
+            "tanggal_teks": "Diterbitkan: November 24, 2026",
+            "tanggal_parse": "2026-11-24T01:52:02"
+          }
+        ]
+      },
+      "konten": {
+        "diuji": 3,
+        "berhasil": 0,
+        "sumber_konten": {
+          "dari_search": 0,
+          "fetch_halaman": 3
+        },
+        "panjang_rata": null,
+        "durasi_rata_s": 1.09,
+        "contoh_gagal": [
+          {
+            "link": "https://theconversation.com/tanpa-sistem-yang-adil-jargon-pahlawan-tanpa-tanda-jasa-akan-terus-merugikan-guru-indonesia-296835",
+            "hasil": "Selector tidak ditemukan untuk domain ini"
+          },
+          {
+            "link": "https://theconversation.com/anak-anak-bukan-objek-libatkan-mereka-saat-membuat-kebijakan-digital-296310",
+            "hasil": "Selector tidak ditemukan untuk domain ini"
+          },
+          {
+            "link": "https://theconversation.com/saat-pemerintah-pusat-mengatur-hutan-daerah-sulit-pegang-kendali-penanganan-bencana-makin-rumit-296411",
+            "hasil": "Selector tidak ditemukan untuk domain ini"
+          }
+        ],
+        "pct_berhasil": 0.0
+      },
+      "durasi_konten_s": 3.28,
+      "durasi_s": 5.02,
+      "http": {
+        "request_total": 4,
+        "request_gagal": 0,
+        "status_http": {
+          "200": 4
+        },
+        "terdeteksi_blokir": 0,
+        "total_kb": 677.2,
+        "latensi_rata_s": 0.244,
+        "latensi_maks_s": 0.451,
+        "contoh_url_gagal": []
+      },
+      "log_scraper": [],
+      "status": "menurun",
+      "alasan": [
+        "Isi artikel berhasil diambil hanya 0.0%"
+      ]
+    }
+  ]
+}
