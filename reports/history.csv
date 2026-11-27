@@ -17,3 +17,12 @@ waktu_wib,label,sumber,status,jumlah_artikel,pct_tanggal_terbaca,pct_dalam_renta
 2026-11-26 11:44,github-actions,Kumparan,menurun,119,100.0,31.1,0.0,100.0,8.35,13,0,0,Hanya 31.1% tanggal dalam rentang
 2026-11-26 11:44,github-actions,Tempo.co,diblokir,0,,,,,1.92,2,2,2,2 respons terlihat diblokir (403/429/503/Cloudflare)
 2026-11-26 11:44,github-actions,The Conversation,menurun,3,100.0,100.0,0.0,0.0,5.02,4,0,0,Isi artikel berhasil diambil hanya 0.0%
+2026-11-27 11:51,github-actions,CNBC Indonesia,ok,10,100.0,100.0,0.0,100.0,1.65,1,0,0,
+2026-11-27 11:51,github-actions,CNN Indonesia,ok,10,100.0,100.0,0.0,100.0,1.73,1,0,0,
+2026-11-27 11:51,github-actions,Detik,menurun,12,100.0,100.0,0.0,66.7,33.08,4,0,0,Isi artikel berhasil diambil hanya 66.7%
+2026-11-27 11:51,github-actions,Kompas,menurun,20,100.0,20.0,0.0,66.7,9.26,4,0,0,Hanya 20.0% tanggal dalam rentang; Isi artikel berhasil diambil hanya 66.7%
+2026-11-27 11:51,github-actions,Republika,menurun,21,100.0,66.7,0.0,100.0,9.01,4,0,0,Hanya 66.7% tanggal dalam rentang
+2026-11-27 11:51,github-actions,Liputan6,kosong_mencurigakan,0,,,,,1.98,1,0,0,Request berhasil tapi 0 artikel -- kemungkinan selector/format respons berubah
+2026-11-27 11:51,github-actions,Kumparan,menurun,120,100.0,35.0,0.0,100.0,10.16,13,0,0,Hanya 35.0% tanggal dalam rentang
+2026-11-27 11:51,github-actions,Tempo.co,diblokir,0,,,,,2.03,2,2,2,2 respons terlihat diblokir (403/429/503/Cloudflare)
+2026-11-27 11:51,github-actions,The Conversation,menurun,3,100.0,100.0,0.0,0.0,5.15,4,0,0,Isi artikel berhasil diambil hanya 0.0%
