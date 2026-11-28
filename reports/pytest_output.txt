@@ -14,7 +14,7 @@ sumber = 'Detik'
 E       AssertionError: Keyword rusak. Request: ['https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026']
 E       assert False
 E        +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}])
-E        +    where [{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x73c1b4897f90>.miss
+E        +    where [{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x77bf7a3baa90>.miss
 
 tests/test_encoding_query.py:34: AssertionError
 ______________________ test_keyword_dikirim_utuh[Kompas] _______________________
@@ -31,7 +31,7 @@ sumber = 'Kompas'
 E       AssertionError: Keyword rusak. Request: ['https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1']
 E       assert False
 E        +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}])
-E        +    where [{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x73c1b4896510>.miss
+E        +    where [{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x77bf7a3b2850>.miss
 
 tests/test_encoding_query.py:34: AssertionError
 ____________ test_error_tempo_dikenali_sebagai_konten_invalid[403-] ____________
@@ -73,7 +73,7 @@ tests/test_konten_invalid.py:20: AssertionError
 __________________ test_pesan_error_tidak_dianalisis_sentimen __________________
 
 engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x73c1b48e3a50>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x77bf7a3e64d0>
 
     def test_pesan_error_tidak_dianalisis_sentimen(engine, monkeypatch):
         pesan_error = "Gagal mengambil halaman (HTTP 403)"
@@ -96,7 +96,7 @@ tests/test_konten_invalid.py:41: AssertionError
 ___________________ test_kumparan_tidak_cocok_potongan_kata ____________________
 
 engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x73c1b48aabd0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x77bf7a3bbed0>
 
     def test_kumparan_tidak_cocok_potongan_kata(engine, monkeypatch):
         monkeypatch.setattr(engine, "KUMPARAN_SITEMAP_CHANNELS", ["https://kumparan.com/sitemap_uji.xml"])
@@ -129,9 +129,9 @@ teks = '12 Okt 2026', harapan = datetime.datetime(2026, 10, 12, 0, 0)
     def test_singkatan_bulan_indonesia(engine, teks, harapan):
         """Banyak situs memakai singkatan bulan. Hasil salah = artikel masuk tanggal keliru."""
 >       assert engine.parse_tanggal(teks) == harapan
-E       AssertionError: assert datetime.datetime(2026, 12, 27, 0, 0) == datetime.datetime(2026, 10, 12, 0, 0)
-E        +  where datetime.datetime(2026, 12, 27, 0, 0) = <function parse_tanggal at 0x73c1b4a9c400>('12 Okt 2026')
-E        +    where <function parse_tanggal at 0x73c1b4a9c400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+E       AssertionError: assert datetime.datetime(2026, 12, 28, 0, 0) == datetime.datetime(2026, 10, 12, 0, 0)
+E        +  where datetime.datetime(2026, 12, 28, 0, 0) = <function parse_tanggal at 0x77bf7a5c0400>('12 Okt 2026')
+E        +    where <function parse_tanggal at 0x77bf7a5c0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
 
 tests/test_parse_tanggal.py:25: AssertionError
 __________ test_singkatan_bulan_indonesia[3 Des 2026, 08:00-harapan1] __________
@@ -148,9 +148,9 @@ teks = '3 Des 2026, 08:00', harapan = datetime.datetime(2026, 12, 3, 8, 0)
     def test_singkatan_bulan_indonesia(engine, teks, harapan):
         """Banyak situs memakai singkatan bulan. Hasil salah = artikel masuk tanggal keliru."""
 >       assert engine.parse_tanggal(teks) == harapan
-E       AssertionError: assert datetime.datetime(2026, 3, 27, 8, 0) == datetime.datetime(2026, 12, 3, 8, 0)
-E        +  where datetime.datetime(2026, 3, 27, 8, 0) = <function parse_tanggal at 0x73c1b4a9c400>('3 Des 2026, 08:00')
-E        +    where <function parse_tanggal at 0x73c1b4a9c400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+E       AssertionError: assert datetime.datetime(2026, 3, 28, 8, 0) == datetime.datetime(2026, 12, 3, 8, 0)
+E        +  where datetime.datetime(2026, 3, 28, 8, 0) = <function parse_tanggal at 0x77bf7a5c0400>('3 Des 2026, 08:00')
+E        +    where <function parse_tanggal at 0x77bf7a5c0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
 
 tests/test_parse_tanggal.py:25: AssertionError
 _____________ test_singkatan_bulan_indonesia[17 Agu 2026-harapan2] _____________
@@ -168,8 +168,8 @@ teks = '17 Agu 2026', harapan = datetime.datetime(2026, 8, 17, 0, 0)
         """Banyak situs memakai singkatan bulan. Hasil salah = artikel masuk tanggal keliru."""
 >       assert engine.parse_tanggal(teks) == harapan
 E       AssertionError: assert None == datetime.datetime(2026, 8, 17, 0, 0)
-E        +  where None = <function parse_tanggal at 0x73c1b4a9c400>('17 Agu 2026')
-E        +    where <function parse_tanggal at 0x73c1b4a9c400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+E        +  where None = <function parse_tanggal at 0x77bf7a5c0400>('17 Agu 2026')
+E        +    where <function parse_tanggal at 0x77bf7a5c0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
 
 tests/test_parse_tanggal.py:25: AssertionError
 ___________ test_waktu_relatif_tidak_menebak_salah[2 jam yang lalu] ____________
@@ -184,8 +184,8 @@ teks = '2 jam yang lalu'
         sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
 >       assert hasil is None or abs(hasil - sekarang) <= timedelta(days=1, hours=1), f"{teks!r} -> {hasil}"
 E       AssertionError: '2 jam yang lalu' -> 2026-11-02 00:00:00
-E       assert (datetime.datetime(2026, 11, 2, 0, 0) is None or datetime.timedelta(days=25, seconds=42659, microseconds=744750) <= datetime.timedelta(days=1, seconds=3600))
-E        +  where datetime.timedelta(days=25, seconds=42659, microseconds=744750) = abs((datetime.datetime(2026, 11, 2, 0, 0) - datetime.datetime(2026, 11, 27, 11, 50, 59, 744750)))
+E       assert (datetime.datetime(2026, 11, 2, 0, 0) is None or datetime.timedelta(days=26, seconds=41708, microseconds=663290) <= datetime.timedelta(days=1, seconds=3600))
+E        +  where datetime.timedelta(days=26, seconds=41708, microseconds=663290) = abs((datetime.datetime(2026, 11, 2, 0, 0) - datetime.datetime(2026, 11, 28, 11, 35, 8, 663290)))
 E        +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
 
 tests/test_parse_tanggal.py:33: AssertionError
@@ -201,8 +201,8 @@ teks = '30 menit yang lalu'
         sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
 >       assert hasil is None or abs(hasil - sekarang) <= timedelta(days=1, hours=1), f"{teks!r} -> {hasil}"
 E       AssertionError: '30 menit yang lalu' -> 2026-11-30 00:00:00
-E       assert (datetime.datetime(2026, 11, 30, 0, 0) is None or datetime.timedelta(days=2, seconds=43740, microseconds=252667) <= datetime.timedelta(days=1, seconds=3600))
-E        +  where datetime.timedelta(days=2, seconds=43740, microseconds=252667) = abs((datetime.datetime(2026, 11, 30, 0, 0) - datetime.datetime(2026, 11, 27, 11, 50, 59, 747333)))
+E       assert (datetime.datetime(2026, 11, 30, 0, 0) is None or datetime.timedelta(days=1, seconds=44691, microseconds=335188) <= datetime.timedelta(days=1, seconds=3600))
+E        +  where datetime.timedelta(days=1, seconds=44691, microseconds=335188) = abs((datetime.datetime(2026, 11, 30, 0, 0) - datetime.datetime(2026, 11, 28, 11, 35, 8, 664812)))
 E        +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
 
 tests/test_parse_tanggal.py:33: AssertionError
@@ -218,15 +218,15 @@ teks = '1 hari yang lalu'
         sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
 >       assert hasil is None or abs(hasil - sekarang) <= timedelta(days=1, hours=1), f"{teks!r} -> {hasil}"
 E       AssertionError: '1 hari yang lalu' -> 2026-11-01 00:00:00
-E       assert (datetime.datetime(2026, 11, 1, 0, 0) is None or datetime.timedelta(days=26, seconds=42659, microseconds=749997) <= datetime.timedelta(days=1, seconds=3600))
-E        +  where datetime.timedelta(days=26, seconds=42659, microseconds=749997) = abs((datetime.datetime(2026, 11, 1, 0, 0) - datetime.datetime(2026, 11, 27, 11, 50, 59, 749997)))
+E       assert (datetime.datetime(2026, 11, 1, 0, 0) is None or datetime.timedelta(days=27, seconds=41708, microseconds=666306) <= datetime.timedelta(days=1, seconds=3600))
+E        +  where datetime.timedelta(days=27, seconds=41708, microseconds=666306) = abs((datetime.datetime(2026, 11, 1, 0, 0) - datetime.datetime(2026, 11, 28, 11, 35, 8, 666306)))
 E        +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
 
 tests/test_parse_tanggal.py:33: AssertionError
 _____________________ test_detik_tanggal_wib_di_server_utc _____________________
 
 engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x73c1b4773ad0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x77bf7a28c390>
 server_utc = None
 
     def test_detik_tanggal_wib_di_server_utc(engine, monkeypatch, server_utc):
@@ -240,7 +240,7 @@ tests/test_zona_waktu.py:18: AssertionError
 _________________ test_detik_artikel_dini_hari_tidak_terbuang __________________
 
 engine = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x73c1b477ea90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x77bf7a297d10>
 server_utc = None
 
     def test_detik_artikel_dini_hari_tidak_terbuang(engine, monkeypatch, server_utc):
@@ -257,11 +257,11 @@ SKIPPED [1] tests/test_replay_fixtures.py:28: Belum ada fixture. Jalankan: pytho
 FAILED tests/test_encoding_query.py::test_keyword_dikirim_utuh[Detik] - AssertionError: Keyword rusak. Request: ['https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026']
 assert False
  +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}])
- +    where [{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x73c1b4897f90>.miss
+ +    where [{'method': 'GET', 'url': 'https://www.detik.com/search/searchall?query=BI%20&%20OJK%20#rupiah%20+5%25&result_type=latest&page=1&fromdatex=01%252F11%252F2026&todatex=02%252F11%252F2026', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x77bf7a3baa90>.miss
 FAILED tests/test_encoding_query.py::test_keyword_dikirim_utuh[Kompas] - AssertionError: Keyword rusak. Request: ['https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1']
 assert False
  +  where False = _keyword_terkirim([{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}])
- +    where [{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x73c1b4896510>.miss
+ +    where [{'method': 'GET', 'url': 'https://search.kompas.com/search?q=BI%20&%20OJK%20#rupiah%20+5%25&page=1', 'body': ''}] = <qa.http_probe.HttpProbe object at 0x77bf7a3b2850>.miss
 FAILED tests/test_konten_invalid.py::test_error_tempo_dikenali_sebagai_konten_invalid[403-] - AssertionError: 'Gagal mengambil halaman (HTTP 403)' tidak ada di KONTEN_INVALID
 assert 'Gagal mengambil halaman (HTTP 403)' in {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'}
  +  where {'Gagal mengambil halaman', 'Konten kosong', 'Selector tidak ditemukan untuk domain ini'} = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.KONTEN_INVALID
@@ -280,30 +280,30 @@ FAILED tests/test_kumparan.py::test_kumparan_tidak_cocok_potongan_kata - Asserti
   +     'https://kumparan.com/a/1',
         'https://kumparan.com/a/2',
     ]
-FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[12 Okt 2026-harapan0] - AssertionError: assert datetime.datetime(2026, 12, 27, 0, 0) == datetime.datetime(2026, 10, 12, 0, 0)
- +  where datetime.datetime(2026, 12, 27, 0, 0) = <function parse_tanggal at 0x73c1b4a9c400>('12 Okt 2026')
- +    where <function parse_tanggal at 0x73c1b4a9c400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
-FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[3 Des 2026, 08:00-harapan1] - AssertionError: assert datetime.datetime(2026, 3, 27, 8, 0) == datetime.datetime(2026, 12, 3, 8, 0)
- +  where datetime.datetime(2026, 3, 27, 8, 0) = <function parse_tanggal at 0x73c1b4a9c400>('3 Des 2026, 08:00')
- +    where <function parse_tanggal at 0x73c1b4a9c400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[12 Okt 2026-harapan0] - AssertionError: assert datetime.datetime(2026, 12, 28, 0, 0) == datetime.datetime(2026, 10, 12, 0, 0)
+ +  where datetime.datetime(2026, 12, 28, 0, 0) = <function parse_tanggal at 0x77bf7a5c0400>('12 Okt 2026')
+ +    where <function parse_tanggal at 0x77bf7a5c0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[3 Des 2026, 08:00-harapan1] - AssertionError: assert datetime.datetime(2026, 3, 28, 8, 0) == datetime.datetime(2026, 12, 3, 8, 0)
+ +  where datetime.datetime(2026, 3, 28, 8, 0) = <function parse_tanggal at 0x77bf7a5c0400>('3 Des 2026, 08:00')
+ +    where <function parse_tanggal at 0x77bf7a5c0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
 FAILED tests/test_parse_tanggal.py::test_singkatan_bulan_indonesia[17 Agu 2026-harapan2] - AssertionError: assert None == datetime.datetime(2026, 8, 17, 0, 0)
- +  where None = <function parse_tanggal at 0x73c1b4a9c400>('17 Agu 2026')
- +    where <function parse_tanggal at 0x73c1b4a9c400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
+ +  where None = <function parse_tanggal at 0x77bf7a5c0400>('17 Agu 2026')
+ +    where <function parse_tanggal at 0x77bf7a5c0400> = <module 'scraper_engine_dari_app' from '/home/runner/work/scrapper_v1/scrapper_v1/app.py'>.parse_tanggal
 FAILED tests/test_parse_tanggal.py::test_waktu_relatif_tidak_menebak_salah[2 jam yang lalu] - AssertionError: '2 jam yang lalu' -> 2026-11-02 00:00:00
-assert (datetime.datetime(2026, 11, 2, 0, 0) is None or datetime.timedelta(days=25, seconds=42659, microseconds=744750) <= datetime.timedelta(days=1, seconds=3600))
- +  where datetime.timedelta(days=25, seconds=42659, microseconds=744750) = abs((datetime.datetime(2026, 11, 2, 0, 0) - datetime.datetime(2026, 11, 27, 11, 50, 59, 744750)))
+assert (datetime.datetime(2026, 11, 2, 0, 0) is None or datetime.timedelta(days=26, seconds=41708, microseconds=663290) <= datetime.timedelta(days=1, seconds=3600))
+ +  where datetime.timedelta(days=26, seconds=41708, microseconds=663290) = abs((datetime.datetime(2026, 11, 2, 0, 0) - datetime.datetime(2026, 11, 28, 11, 35, 8, 663290)))
  +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
 FAILED tests/test_parse_tanggal.py::test_waktu_relatif_tidak_menebak_salah[30 menit yang lalu] - AssertionError: '30 menit yang lalu' -> 2026-11-30 00:00:00
-assert (datetime.datetime(2026, 11, 30, 0, 0) is None or datetime.timedelta(days=2, seconds=43740, microseconds=252667) <= datetime.timedelta(days=1, seconds=3600))
- +  where datetime.timedelta(days=2, seconds=43740, microseconds=252667) = abs((datetime.datetime(2026, 11, 30, 0, 0) - datetime.datetime(2026, 11, 27, 11, 50, 59, 747333)))
+assert (datetime.datetime(2026, 11, 30, 0, 0) is None or datetime.timedelta(days=1, seconds=44691, microseconds=335188) <= datetime.timedelta(days=1, seconds=3600))
+ +  where datetime.timedelta(days=1, seconds=44691, microseconds=335188) = abs((datetime.datetime(2026, 11, 30, 0, 0) - datetime.datetime(2026, 11, 28, 11, 35, 8, 664812)))
  +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
 FAILED tests/test_parse_tanggal.py::test_waktu_relatif_tidak_menebak_salah[1 hari yang lalu] - AssertionError: '1 hari yang lalu' -> 2026-11-01 00:00:00
-assert (datetime.datetime(2026, 11, 1, 0, 0) is None or datetime.timedelta(days=26, seconds=42659, microseconds=749997) <= datetime.timedelta(days=1, seconds=3600))
- +  where datetime.timedelta(days=26, seconds=42659, microseconds=749997) = abs((datetime.datetime(2026, 11, 1, 0, 0) - datetime.datetime(2026, 11, 27, 11, 50, 59, 749997)))
+assert (datetime.datetime(2026, 11, 1, 0, 0) is None or datetime.timedelta(days=27, seconds=41708, microseconds=666306) <= datetime.timedelta(days=1, seconds=3600))
+ +  where datetime.timedelta(days=27, seconds=41708, microseconds=666306) = abs((datetime.datetime(2026, 11, 1, 0, 0) - datetime.datetime(2026, 11, 28, 11, 35, 8, 666306)))
  +  and   datetime.timedelta(days=1, seconds=3600) = timedelta(days=1, hours=1)
 FAILED tests/test_zona_waktu.py::test_detik_tanggal_wib_di_server_utc - assert datetime.datetime(2026, 11, 24, 17, 30) == datetime.datetime(2026, 11, 25, 0, 30)
  +  where datetime.datetime(2026, 11, 25, 0, 30) = datetime(2026, 11, 25, 0, 30)
 FAILED tests/test_zona_waktu.py::test_detik_artikel_dini_hari_tidak_terbuang - AssertionError: Artikel 25 Nov 00:30 WIB terbuang dari filter tanggal 25 Nov
 assert 0 == 1
  +  where 0 = len([])
-14 failed, 16 passed, 1 skipped in 3.38s
+14 failed, 16 passed, 1 skipped in 3.34s
